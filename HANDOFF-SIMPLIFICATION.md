@@ -1,4 +1,4 @@
-# Simplification handoff ,  pxe-agent-box
+# Simplification handoff — pxe-agent-box
 
 Audience: an agent tasked with **reducing provisioning complexity** in this
 repo. Read this fully before touching code. Everything below was learned the
@@ -45,7 +45,7 @@ Format: Symptom → Root cause → Workaround currently in place → Simplificat
    - herdr installer crashes with `HOME: parameter not set` when run via
      cloud-init/qemu-ga (no `$HOME`). Workaround: `export HOME="${HOME:-/root}"`.
    - starship installer prompts interactively (and its stdin IS the piped
-     script ,  prompting breaks it); requires escalation for `/usr/local/bin`.
+     script — prompting breaks it); requires escalation for `/usr/local/bin`.
      Workaround: `--yes -b ~/.local/bin`.
    - **Path:** avoid curl-installers entirely where an alternative exists:
      claude-code already moved to Anthropic's signed apt repo; check whether
@@ -53,7 +53,7 @@ Format: Symptom → Root cause → Workaround currently in place → Simplificat
      One `apt` line beats five workarounds per tool.
 
 2. **opencode npm meta-package misresolves platform deps** (`EBADPLATFORM`,
-   wants musl on glibc ,  upstream bug, failed on multiple runs even with
+   wants musl on glibc — upstream bug, failed on multiple runs even with
    `--force`). Workaround: `npm i -g opencode-linux-x64` directly +
    manual symlink into `/usr/local/bin` (platform-scoped npm packages don't
    create bin links).
@@ -65,7 +65,7 @@ Format: Symptom → Root cause → Workaround currently in place → Simplificat
    for any new binary.
 
 4. **claude native installer busy-loops (100% CPU, zero network, 12+ min) on
-   headless guests** ,  twice. Moved to the apt repo (verify signing-key
+   headless guests** — twice. Moved to the apt repo (verify signing-key
    fingerprint `31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE` before registering;
    stable channel). **Keep** whichever method is currently in provision.sh,
    and never trust a downloaded key without fingerprint verification.
@@ -74,15 +74,15 @@ Format: Symptom → Root cause → Workaround currently in place → Simplificat
 
 1. **Root-tree ↔ user-tree hops caused cascading bugs:** herdr/moshi/uv
    landed in `/root/.local/bin` (mode-0700 home) and were symlinked into
-   `/usr/local/bin` ,  dev could not traverse `/root`, so the "global" binaries
+   `/usr/local/bin` — dev could not traverse `/root`, so the "global" binaries
    were invisible to the actual user; one daemon was caught running a
    **deleted** binary inode; copies carried a stale uid-501 owner. Fixed piecemeal
    with `install -m755` copies and correct ownership.
    **Path:** this is THE simplification target. Rule:
    - Tools updated by the provisioner (herdr, moshi-hook, uv, starship,
      tmux…): install **directly** into `/usr/local/bin` (most installers accept
-     a dir override ,  `HERDR_INSTALL_DIR=/usr/local/bin` does; others need the
-     copy) ,  owned by root, exactly like distro packages.
+     a dir override — `HERDR_INSTALL_DIR=/usr/local/bin` does; others need the
+     copy) — owned by root, exactly like distro packages.
    - Tools that self-update in place (bun upgrade, possibly claude if the
      native route returns): user-owned under `~dev/.local/bin`, which is fine
      because only dev runs them.
@@ -100,7 +100,7 @@ Format: Symptom → Root cause → Workaround currently in place → Simplificat
 1. **Bash syntax in /etc/profile.d broke ALL non-bash login shells.** The
    welcome banner used `[[`, `compgen`, arithmetic ternaries; Ubuntu sources
    profile.d for dash too, so any `sh -lc` probe got a wall of errors and
-   **exit 2 ,  which silently broke Moshi's moshi-hook detection**. Same class
+   **exit 2 — which silently broke Moshi's moshi-hook detection**. Same class
    of bug: `zoxide.sh` evaluating bash-only output unconditionally.
    Workarounds: banner rewritten in POSIX sh with a non-interactive early
    return; zoxide guards on `${BASH_VERSION:-}` and zsh gets its own
@@ -111,7 +111,7 @@ Format: Symptom → Root cause → Workaround currently in place → Simplificat
 
 2. **zsh prompt wars: herdr's .zshrc template registers `prompt adam1`,
    whose precmd re-asserts the old prompt every render**, stomping starship
-   regardless of load order ,  while one-shot `zsh -ic` probes looked fine,
+   regardless of load order — while one-shot `zsh -ic` probes looked fine,
    which made diagnosis miserable. Workaround: provision strips
    `promptinit/prompt adam1` lines whenever merging an existing `.zshrc`, and
    seeds a full replacement otherwise.
@@ -142,12 +142,12 @@ Format: Symptom → Root cause → Workaround currently in place → Simplificat
     generate YAML programmatically (python/yq) instead of shell string surgery.
 
  3. **`yes | ufw enable` killed provisioning** under `set -o pipefail`
-    (SIGPIPE 141 after ufw closes stdin) right after enabling the firewall , 
+    (SIGPIPE 141 after ufw closes stdin) right after enabling the firewall —
     silent, late-stage failure. Use `ufw --force enable`. Generic rule: **no
     pipeline whose producer outlives the consumer** under pipefail.
 
  4. **Serial-console mirroring via runcmd's `bash | tee /dev/ttyS0` failed
-    cloud-init** when tee hit EIO (serial-getty owns the tty) ,  exit status of
+    cloud-init** when tee hit EIO (serial-getty owns the tty) — exit status of
     the pipeline is tee's, not the script's. Workaround: mirror inside
     provision.sh with `exec > >(tee /dev/ttyS0) 2>&1` guarded on writability.
     **Path:** keep; alternatively drop serial mirroring entirely and rely on
@@ -159,12 +159,12 @@ Format: Symptom → Root cause → Workaround currently in place → Simplificat
     noise; now counts only the admin user's `--user` env. Correct hint text:
     `pip3 install --user --break-system-packages -U <name>`.
 
- 6. **Idempotency is mandatory** ,  proved necessary when a qemu-ga restart
+ 6. **Idempotency is mandatory** — proved necessary when a qemu-ga restart
     orphaned half a run and a second instance raced dpkg locks (both died).
     Rules that emerged: never assume first-boot freshness; make
     `provision.sh` safe to re-run end-to-end; guard against concurrent
     instances with a lockfile (not pgrep -f, which self-matches its own
-    command line ,  bit us too).
+    command line — bit us too).
 
  7. **Remote-debug footguns** (cost hours): nested quoting through
     `qm guest exec`, seds applied to the Mac instead of the guest (worked
@@ -175,7 +175,7 @@ Format: Symptom → Root cause → Workaround currently in place → Simplificat
 
 ### Upstream-format assumptions
 
- 1. **bun release tags are `bun-vX.Y.Z`** ,  naive strip left `-v1.4.0` and the
+ 1. **bun release tags are `bun-vX.Y.Z`** — naive strip left `-v1.4.0` and the
     banner offered downgrading to a phantom version. Verify tag formats, don't
     guess. Similarly the preset/config TOML of herdr changes between versions
     (duplicate `[theme]` table incident: seeding appended a second table;
@@ -194,7 +194,7 @@ Format: Symptom → Root cause → Workaround currently in place → Simplificat
   But a failure in the core chain (apt/base) SHOULD fail loudly.
 - The MOTD banner is the human interface: checklist of manual steps
   (tailscale up, gh auth login, claude login, moshi pairing) with live state;
-  apt/npm/pip/bun update counts refreshed by a 12h timer ,  never scanned at
+  apt/npm/pip/bun update counts refreshed by a 12h timer — never scanned at
   login.
 
 ## Smoke-test suite to build (highest leverage)
