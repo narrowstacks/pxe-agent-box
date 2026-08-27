@@ -83,7 +83,10 @@ qm create "$TEMPLATE_ID" \
 rm -f "$IMG"
 
 log "attaching cloud-init drive and serial console bits"
-qm set "$TEMPLATE_ID" --ide2 "${SNIPPET_STORAGE}:cloudinit" --boot order=scsi0
+# cloud-init drive goes on $STORAGE (images-capable), NOT snippet storage —
+# PVE generates the per-VM cloudinit qcow2 there at start; many hosts declare
+# 'local' as iso/vztmpl/backup only.
+qm set "$TEMPLATE_ID" --ide2 "${STORAGE}:cloudinit" --boot order=scsi0
 qm set "$TEMPLATE_ID" --ciuser "$ADMIN_USER"
 
 log "converting to template"
