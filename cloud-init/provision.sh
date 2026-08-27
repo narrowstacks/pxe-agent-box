@@ -246,19 +246,57 @@ google-chrome --version
 which xvfb-run || log "WARNING: xvfb missing — headed chrome unavailable"
 
 cat >/etc/profile.d/agent-box-welcome.sh <<'EOF'
-# agent-box welcome banner
-printf '\n\033[1;36m=== agent-box ===\033[0m\n'
-printf 'bun %s | node %s | pnpm %s | docker ready\n' \
-  "$(bun --version)" "$(node --version)" "$(pnpm --version)"
-printf 'agents: claude / opencode / pi / codex | chrome: google-chrome [--headless=new]\n'
-printf 'headed chrome under virtual display: google-chrome-under-xvfb <url>\n'
-printf 'tsc/tsx/vitest ready | uv + pytest/ruff/black ready | docker ready\n'
-printf 'tailscale installed — run: sudo tailscale up\n\n'
+# agent-box welcome banner + interactive first-run setup checklist.
+# Sourced by every login shell (bash -l); keep it fast and quiet-on-fail.
+
 # ensure ~/.local/bin (where the claude installer links its binary) is on PATH
 case ":$PATH:" in
   *":$HOME/.local/bin:"*) ;;
   *) export PATH="$HOME/.local/bin:$PATH" ;;
 esac
+
+printf '\n\033[1;36m=== agent-box ===\033[0m\n'
+printf 'bun %s | node %s | pnpm %s | docker ready\n' \
+  "$(bun --version 2>/dev/null)" "$(node --version 2>/dev/null)" "$(pnpm --version 2>/dev/null)"
+printf 'agents: claude / opencode / pi / codex | chrome: google-chrome [--headless=new]\n'
+printf 'headed chrome under virtual display: google-chrome-under-xvfb <url>\n'
+printf 'tsc/tsx/vitest ready | uv + pytest/ruff/black ready | docker ready\n\n'
+
+# One-time account setup checklist. Each line re-checks LIVE state, so the
+# list shrinks as you complete the steps.
+green='\033[0;32m'; yellow='\033[0;33m'; dim='\033[2m'; off='\033[0m'
+row() { # row <done|todo> <label> <command>
+  if [[ "$1" == done ]]; then
+    printf " ${green}✔${off} %-14s${dim}done${off}\n" "$2"
+  else
+    printf " ${yellow}○${off} %-14s run: \033[1m%s\033[0m\n" "$2" "$3"
+  fi
+}
+
+remaining=0
+
+if sudo tailscale status --json 2>/dev/null | grep -q '"BackendState": "Running"'; then
+  row done tailscale '' ; else remaining=$((remaining+1)); row todo tailscale 'sudo tailscale up'
+fi
+
+if gh auth status >/dev/null 2>&1; then
+  row done 'gh' ''; else remaining=$((remaining+1)); row todo 'gh' 'gh auth login'
+fi
+
+if [[ -f "$HOME/.claude/.credentials.json" || -f "$HOME/.claude.json" ]]; then
+  row done claude ''; else remaining=$((remaining+1)); row todo claude '~/.local/bin/claude'
+fi
+
+if command -v moshi >/dev/null 2>&1 && compgen -G "$HOME/.moshi*" >/dev/null; then
+  row done 'moshi-hook' ''; else remaining=$((remaining+1)); row todo 'moshi-hook' 'pair from Moshi on iOS'
+fi
+
+if ((remaining)); then
+  printf " ${dim}%s step%s left before this box is fully yours${off}\n\n" \
+    "$remaining" "$( ((remaining == 1)) || echo s )"
+else
+  printf " ${green}all setup steps complete — happy hacking${off}\n\n"
+fi
 EOF
 
 log "cleaning apt caches"
