@@ -66,7 +66,9 @@ log "ensuring Ubuntu cloud image is present at ${IMG}"
 wget -q --show-progress -O "${IMG}.part" "$CLOUD_IMAGE_URL"
 mv "${IMG}.part" "$IMG"
 
-log "creating VM ${TEMPLATE_ID} (${TEMPLATE_NAME})"
+log "creating VM ${TEMPLATE_ID} (${TEMPLATE_NAME}) with imported disk"
+# PVE 8.2+: import the image directly at create time via --import-from.
+# (The legacy 'qm importdisk' alias mangles args on 8.4: "lvm name ... illegal characters".)
 qm create "$TEMPLATE_ID" \
   --name "$TEMPLATE_NAME" \
   --memory 2048 --balloon 0 \
@@ -76,20 +78,9 @@ qm create "$TEMPLATE_ID" \
   --ostype l26 \
   --serial0 socket --vga serial0 \
   --agent enabled=1,fstrim_cloned_disks=1 \
-  --boot order=scsi0
-
-log "importing disk image into storage '${STORAGE}'"
-IMPORT_OUT="$(qm importdisk "$TEMPLATE_ID" "$IMG" "$STORAGE" --format raw 2>&1)"
+  --boot order=scsi0 \
+  --scsi0 "${STORAGE}:0,import-from=${IMG},discard=on,ssd=1"
 rm -f "$IMG"
-
-DISK_REF="$(printf '%s\n' "$IMPORT_OUT" | sed -n 's/^unused0:[^:]*:\(.*\)$/\1/p' | tail -n1 | tr -d '[:space:]')"
-DISK_REF="${DISK_REF%.1}" # importdisk may append a transfer-progress suffix like ".100%"
-if [[ -z "$DISK_REF" ]]; then
-  DISK_REF="vm-${TEMPLATE_ID}-disk-0"
-  log "could not parse importdisk output, assuming disk '${DISK_REF}'"
-fi
-
-qm set "$TEMPLATE_ID" --scsi0 "${STORAGE}:${DISK_REF},discard=on,ssd=1"
 
 log "attaching cloud-init drive and serial console bits"
 qm set "$TEMPLATE_ID" --ide2 "${SNIPPET_STORAGE}:cloudinit" --boot order=scsi0
