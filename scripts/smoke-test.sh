@@ -169,5 +169,23 @@ done
 remote 'command -v node >/dev/null'
 check "node resolves for a plain non-interactive ssh command" $?
 
+printf '\n\033[1;34m== systemd user units ==\033[0m\n'
+
+remote 'loginctl show-user "$(id -un)" -p Linger | grep -q "Linger=yes"'
+check "linger is enabled" $?
+
+for u in moshi-hook herdr-session; do
+  remote "systemctl --user is-active $u.service >/dev/null"
+  check "$u.service is active" $?
+done
+
+remote 'herdr session list 2>/dev/null | grep -q .'
+check "herdr reports at least one session" $?
+
+# moshi-hook state lives in ~/.config/moshi, NOT in ~/.moshi*. A previous
+# check probed the wrong path and reported unpaired forever.
+remote 'test -d ~/.config/moshi'
+check "moshi state directory exists at ~/.config/moshi" $?
+
 printf '\n\033[1;34m== %d passed, %d failed ==\033[0m\n' "$pass" "$fail"
 [[ $fail -eq 0 ]]

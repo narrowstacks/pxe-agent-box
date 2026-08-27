@@ -604,3 +604,86 @@ fi
 
 mkdir -p "${DEV_HOME}/.cache"
 chown -R 1000:1000 "${DEV_HOME}/.cache"
+
+##### 10. systemd user units #####
+#
+# Linger keeps these running when no session is attached, which is what makes
+# the box reachable from Moshi's session picker without an SSH login first.
+
+log "systemd user units"
+loginctl enable-linger "$DEV_USER"
+
+# 'sudo -iu' does not run a real PAM login session, so it never inherits
+# XDG_RUNTIME_DIR or DBUS_SESSION_BUS_ADDRESS from logind; systemctl --user
+# below would otherwise fail with "Failed to connect to user scope bus".
+# Linger already keeps this user manager running, so just make sure it is
+# up before talking to it instead of waiting on a session that never comes.
+systemctl start "user@$(id -u "$DEV_USER").service"
+
+install -d -o 1000 -g 1000 -m 0755 "${DEV_HOME}/.config/systemd/user"
+
+# The subcommand is 'serve'. ExecStart points at /usr/local/bin because
+# moshi-hook is a root-tree tool now, not the old %h/.local/bin path.
+cat >"${DEV_HOME}/.config/systemd/user/moshi-hook.service" <<'EOF'
+[Unit]
+Description=Moshi hook daemon (agent hooks + Moshi bridge)
+After=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/moshi-hook serve
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+EOF
+
+# Pre-starts the default herdr session so Moshi's picker shows a workspace on
+# first connect; it lists only RUNNING sessions, so a fresh box would
+# otherwise show nothing until someone ran 'herdr' by hand.
+#
+# script(1) is not decoration: herdr's TUI needs a tty even when the client
+# just daemonizes the session. Type=simple because the script/herdr-client
+# process stays attached to the session (unlike tmux's detach-and-exit), so
+# forking detection would time out. The unit IS the session holder.
+#
+# Do NOT use 'herdr server stop' to walk away; that kills every pane.
+cat >"${DEV_HOME}/.config/systemd/user/herdr-session.service" <<'EOF'
+[Unit]
+Description=herdr default session (pre-started for Moshi)
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/script -qec /usr/local/bin/herdr /dev/null
+Restart=on-failure
+RestartSec=10
+StandardOutput=null
+StandardError=null
+
+[Install]
+WantedBy=default.target
+EOF
+
+chown -R 1000:1000 "${DEV_HOME}/.config/systemd"
+
+# ~/projects is the herdr workspace home, so the picker shows "projects"
+# rather than a bare "~" home-dir workspace.
+as_user <<'EOF'
+set -euo pipefail
+export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+export DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus"
+mkdir -p "$HOME/projects"
+systemctl --user daemon-reload
+systemctl --user enable --now moshi-hook.service   || echo "WARNING: moshi-hook unit failed" >&2
+systemctl --user enable --now herdr-session.service || echo "WARNING: herdr-session unit failed" >&2
+EOF
+
+# Pre-install the Claude agent hooks so blocked agents can push to the phone
+# as soon as pairing happens. claude must already be installed (task 9).
+# Same bus env as above: without it, moshi-hook can't see its own already-
+# running daemon and prints a misleading "daemon isn't running" warning.
+optional "moshi-hook claude hooks" \
+  sudo -iu "$DEV_USER" env \
+    "XDG_RUNTIME_DIR=/run/user/$(id -u "$DEV_USER")" \
+    "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u "$DEV_USER")/bus" \
+    moshi-hook install --target claude
