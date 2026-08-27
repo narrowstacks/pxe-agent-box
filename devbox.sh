@@ -96,10 +96,24 @@ cmd_salvage() {
       continue
     fi
 
-    qm guest exec "$src_vmid" --timeout 120 -- /bin/sh -c \
-      "tar -C '$(dirname "$src")' -cf - '$(basename "$src")' | base64 -w0" \
-      | python3 -c 'import json,sys,base64; sys.stdout.buffer.write(base64.b64decode(json.load(sys.stdin)["out-data"]))' \
-      | tar -C "$dest" -xf -
+    # A single entry failing must not abort the salvage. The closing chown
+    # would be skipped and everything already extracted would stay
+    # root-owned, which is broken state for a volume the guest reads as
+    # uid 1000. Warn and continue, matching how optional steps behave
+    # elsewhere in this project.
+    if ! qm guest exec "$src_vmid" --timeout 120 -- /bin/sh -c \
+        "tar -C '$(dirname "$src")' -cf - '$(basename "$src")' | base64 -w0" \
+      | python3 -c 'import json, sys, base64
+try:
+    payload = json.load(sys.stdin)["out-data"]
+except Exception as exc:
+    print("salvage decode failed: %s" % exc, file=sys.stderr)
+    raise SystemExit(1)
+sys.stdout.buffer.write(base64.b64decode(payload))' \
+      | tar -C "$dest" -xf -; then
+      warn "could not salvage ${src}, continuing"
+      continue
+    fi
 
     # Entries land under their original basename; move into the mapped name.
     local landed
