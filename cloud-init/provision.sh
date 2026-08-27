@@ -259,27 +259,48 @@ mkdir -p /var/lib/agent-box
 {
   printf 'updates=%s\nsecurity=%s\n' "$updates" "$security"
 
-  # npm -g covers everything npm-installed: pnpm, opencode, pi, codex, tsx…
-  # (--parseable = one line per package, machine-countable)
+  # npm -g covers everything npm-installed system-wide: pnpm, opencode, pi,
+  # codex, tsx… (--parseable = one line per package, machine-countable)
   npm_outdated=0
   command -v npm >/dev/null && \
     npm_outdated=$(npm outdated -g --parseable 2>/dev/null | grep -c . || true)
   printf 'npm_outdated=%s\n' "$npm_outdated"
 
-  # bun keeps its own global tree (~/.bun/install/global); the node_modules
-  # layout is npm-compatible, so npm can count outdated packages there.
+  # Agents run as the admin user, so scan THAT account's ecosystem trees:
+  # ~/.bun/install/global (bun add -g) and pip's --user env (~/.local), where
+  # runtime installs actually land. System python env is also counted, minus
+  # entries the user tree supersedes (shadowing must not double-report).
+  ADMIN_USER_="${ADMIN_USER:-dev}"
+  ADMIN_HOME="$(getent passwd "$ADMIN_USER_" | cut -d: -f6)"
+
   bun_outdated=0
-  if command -v bun >/dev/null && [[ -f "${HOME}/.bun/install/global/package.json" ]]; then
+  if command -v bun >/dev/null && [[ -f "${ADMIN_HOME}/.bun/install/global/package.json" ]]; then
     bun_outdated=$(npm outdated -g --parseable \
-      --prefix "${HOME}/.bun/install/global" 2>/dev/null | grep -c . || true)
+      --prefix "${ADMIN_HOME}/.bun/install/global" 2>/dev/null | grep -c . || true)
   fi
   printf 'bun_outdated=%s\n' "$bun_outdated"
 
-  # distro-python packages (PEP 668 env); output = 2 header rows then results
-  pip_outdated=0
-  command -v pip3 >/dev/null && \
-    pip_outdated=$(pip3 list --outdated --disable-pip-version-check 2>/dev/null |
-      tail -n +3 | grep -c . || true)
+  # effective python-outdated set = system-env entries the user hasn't
+  # superseded, plus the user's own outdated --user packages. Names are
+  # normalized (lowercase) because pip spellings vary (PyYAML vs pyyaml).
+  sys_out=$(mktemp) user_has=$(mktemp) user_out=$(mktemp)
+  if command -v pip3 >/dev/null; then
+    pip3 list --outdated --disable-pip-version-check 2>/dev/null |
+      tail -n +3 | awk '{print tolower($1)}' >"$sys_out" || true
+  fi
+  if [[ -n "$ADMIN_HOME" ]] && ls "${ADMIN_HOME}"/.local/lib/python3*/site-packages >/dev/null 2>&1; then
+    # names the user env already owns (up-to-date or outdated): these supersede
+    { su -s /bin/bash "$ADMIN_USER_" -c \
+        'pip3 list --user --format=freeze 2>/dev/null' | cut -d= -f1
+      su -s /bin/bash "$ADMIN_USER_" -c \
+        'pip3 list --outdated --user --disable-pip-version-check 2>/dev/null' | tail -n +3 | awk '{print $1}'
+    } | tr 'A-Z' 'a-z' | sort -u >"$user_has"
+    su -s /bin/bash "$ADMIN_USER_" -c \
+      'pip3 list --outdated --user --disable-pip-version-check 2>/dev/null' \
+      | tail -n +3 | awk '{print tolower($1)}' >"$user_out" || true
+  fi
+  pip_outdated=$( { grep -vxFf "$user_has" "$sys_out"; cat "$user_out"; } | sort -u | grep -c . || true )
+  rm -f "$sys_out" "$user_has" "$user_out"
   printf 'pip_outdated=%s\n' "$pip_outdated"
 
   # bun self-updates outside npm; compare against the latest GitHub release.
@@ -402,7 +423,7 @@ if [[ -r /var/lib/agent-box/apt-status ]]; then
         "$npm_outdated" "$( ((npm_outdated == 1)) || echo s )"
     fi
     if ((pip_outdated > 0)); then
-      printf " ${dim}%s python package%s outdated${off} — pip3 list --outdated; pip3 install -U <name>\n" \
+      printf " ${dim}%s python package%s outdated${off} — pip3 list --outdated; pip3 install -U --user <name>\n" \
         "$pip_outdated" "$( ((pip_outdated == 1)) || echo s )"
     fi
     if ((bun_outdated > 0)); then
