@@ -210,8 +210,27 @@ if [[ "${SKIP_SLOW:-0}" != "1" ]]; then
   # run exited 0, and it logged nothing through the ERROR path. Warnings are
   # still surfaced below, uncounted, so a human can eyeball them.
   remote 'sed -E "s/\x1b\[[0-9;]*m//g" /tmp/rerun.log > /tmp/rerun.clean.log'
+
+  # If the sed/redirect above silently failed, the clean log would be
+  # missing or empty, and '! grep -q ...' against a missing file exits 2,
+  # which the leading '!' flips into a false PASS: a missing log would read
+  # as "no errors found". Assert the log exists and is non-empty first so
+  # that failure mode fails loudly instead of passing quietly.
+  remote 'test -s /tmp/rerun.clean.log'
+  check "the re-run produced a readable log" $?
+
   remote '! grep -q "^ERROR:" /tmp/rerun.clean.log'
   check "the re-run logged no errors" $?
+
+  # apt's own summary line is deterministic on a genuinely idempotent
+  # re-run, unlike the ERROR/WARNING checks above. It proves nothing
+  # actually changed, not merely that nothing complained. The docker,
+  # tailscale, gh, claude-code and chrome installs below this line in
+  # bootstrap.sh are each gated by 'command -v', so on a re-run only the
+  # base 'apt-get install' at the top of the script runs apt at all, and
+  # this line appears exactly once.
+  remote 'grep -q "0 upgraded, 0 newly installed, 0 to remove and 0 not upgraded." /tmp/rerun.clean.log'
+  check "the re-run installed and upgraded nothing (apt reports no changes)" $?
 
   warnings="$(remote 'grep "^WARNING:" /tmp/rerun.clean.log' 2>/dev/null || true)"
   if [[ -n "$warnings" ]]; then
