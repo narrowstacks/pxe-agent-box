@@ -85,14 +85,18 @@ ln -sf /root/.local/bin/uvx /usr/local/bin/uvx
 # them and abort.
 pip3 install --break-system-packages --ignore-installed --no-input ${PIP_PACKAGES}
 
-log "installing Claude Code via the official installer (as ${ADMIN_USER}; lands in ~/.local/bin)"
-# Tolerate failure: some installer builds busy-loop post-download on headless
-# guests; a wedged install must not abort provisioning. The banner checklist
-# and verification step below surface it if missing.
-# nosemgrep: bash.curl.security.curl-pipe-bash.curl-pipe-bash (Anthropic's own installer over TLS)
-sudo -iu "$ADMIN_USER" timeout 300 bash -c \
-  'curl -fsSL https://claude.ai/install.sh | bash' ||
-  log "WARNING: claude installer failed/timed out — run later as ${ADMIN_USER}: curl -fsSL https://claude.ai/install.sh | bash"
+log "installing Claude Code from Anthropic's apt repo (approved headless install)"
+# Native installer busy-loops post-download on some headless guests; per
+# Anthropic guidance use the signed apt repo instead. Tolerate failure: the
+# verification step and banner checklist surface claude if it's missing.
+mkdir -p /etc/apt/keyrings
+curl -fsSL https://downloads.claude.ai/keys/claude-code.asc \
+  -o /etc/apt/keyrings/claude-code.asc &&
+  echo "deb [signed-by=/etc/apt/keyrings/claude-code.asc] https://downloads.claude.ai/claude-code/apt/stable stable main" \
+  >/etc/apt/sources.list.d/claude-code.list &&
+  apt-get update -qq &&
+  DEBIAN_FRONTEND=noninteractive apt-get install -y claude-code ||
+  log "WARNING: claude-code apt install failed — see https://docs.claude.ai for manual steps"
 
 log "installing Google Chrome stable (full GUI + headless in one binary)"
 CHROME_DEB="$(mktemp /tmp/chrome-XXXXXX.deb)"
@@ -245,8 +249,10 @@ command -v herdr >/dev/null 2>&1 || log "WARNING: herdr missing"
 command -v mosh-server >/dev/null 2>&1 || log "WARNING: mosh missing"
 python3 -c 'import yaml; print("pyyaml", yaml.__version__)' || log "WARNING: pyyaml missing"
 gh auth status 2>/dev/null || true # expect 'not logged in' until you run `gh auth login`
+command -v claude >/dev/null 2>&1 ||
+  log "WARNING: claude not on PATH — apt install may have failed"
 sudo -iu "$ADMIN_USER" bash -lc 'claude --version' ||
-  log "WARNING: claude not found for ${ADMIN_USER} (check ~/.local/bin/claude)"
+  log "WARNING: claude not runnable for ${ADMIN_USER}"
 google-chrome --version
 which xvfb-run || log "WARNING: xvfb missing — headed chrome unavailable"
 
