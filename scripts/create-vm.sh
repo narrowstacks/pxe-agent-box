@@ -155,6 +155,10 @@ qm clone "$TEMPLATE_ID" "$VM_ID" --name "$VM_NAME" --full 1
 DISK_GB="${VM_DISK_SIZE:-$VM_DISK_SIZE_GB}"
 log "applying sizing: ${VM_CORES} cores / ${VM_MEMORY_MB}MiB / ${DISK_GB}G disk"
 qm set "$VM_ID" --cores "$VM_CORES" --memory "$VM_MEMORY_MB" --balloon 2048
+# x86-64-v3 exposes AVX2 from the host (PVE 8.x custom cpu type). The default
+# qemu64 CPU lacks AVX, and modern bun-based binaries (opencode) segfault on
+# boot without it. charon's Ryzen 5 1600 has AVX2.
+qm set "$VM_ID" -cpu x86-64-v3
 # PVE 8.4: legacy 'qm resize' alias mangles args; use the full 'qm disk resize'
 # command with size as a positional argument.
 qm disk resize "$VM_ID" scsi0 "${DISK_GB}G"

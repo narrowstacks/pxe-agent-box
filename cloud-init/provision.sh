@@ -73,6 +73,11 @@ npm install -g @openai/codex
 # package directly — exactly what npm's own error message recommends.
 npm install -g opencode-linux-x64 ||
   log "WARNING: opencode install failed — retry later: npm i -g opencode-linux-x64"
+# platform-scoped packages don't get a bin link on PATH (no top-level bin map)
+# — link the binary explicitly so it lands next to the other agents.
+if [[ -x /usr/lib/node_modules/opencode-linux-x64/bin/opencode ]]; then
+  ln -sf /usr/lib/node_modules/opencode-linux-x64/bin/opencode /usr/local/bin/opencode
+fi
 # pi explicitly documents --ignore-scripts: no lifecycle scripts needed for normal installs
 npm install -g --ignore-scripts @earendil-works/pi-coding-agent
 
