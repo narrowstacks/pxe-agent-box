@@ -257,6 +257,9 @@ conf="$HOME/.config/herdr/config.toml"
 if [[ ! -f "$conf" ]]; then
   mkdir -p "$(dirname "$conf")"
   herdr --default-config > "$conf"
+  # herdr panes default to $SHELL (bash at provision time) — pin zsh, which
+  # is this box's login shell.
+  sed -i 's|^# default_shell = ""|default_shell = "/usr/bin/zsh"|' "$conf"
   sed -i \
     -e 's|^# name = "catppuccin"|name = "catppuccin"|' \
     -e 's|^# auto_switch = false|auto_switch = true|' \
