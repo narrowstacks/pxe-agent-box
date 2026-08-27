@@ -111,12 +111,25 @@ remote '! grep -qE "promptinit|prompt adam1" ~/.zshrc'
 # shellcheck disable=SC2088  # description text, not an executed path
 check "~/.zshrc registers no competing prompt" $?
 
+# grep -qv on its own succeeds on ANY non-matching line, including an
+# empty one, so it alone would pass even if starship never initialised.
+# Positive assertion first (starship IS the prompt), negative second
+# (herdr's adam1 theme is NOT), so a genuinely broken prompt still fails.
+remote 'zsh -ic "echo \$PROMPT" 2>/dev/null | grep -q starship'
+check "starship owns the interactive prompt" $?
+
 remote 'zsh -ic "echo \$PROMPT" 2>/dev/null | grep -qv adam'
-check "starship is the active prompt" $?
+check "no adam1 prompt theme is active" $?
 
 remote 'test -L ~/.zshrc && readlink -f ~/.zshrc | grep -q "^/data/"'
 # shellcheck disable=SC2088  # description text, not an executed path
 check "~/.zshrc persists on /data" $?
+
+# The gate that would have caught the .local/bin duplication between
+# ~/.zshenv and ~/.zshrc: multiple PATH owners for the same entry silently
+# stack instead of erroring, so nothing else in this suite would notice.
+remote 'test "$(zsh -ic "echo \$PATH" 2>/dev/null | tr : "\n" | sort | uniq -d | wc -l)" -eq 0'
+check "interactive PATH has no duplicate entries" $?
 
 # Moved here from Task 10: these need the login-shell PATH that
 # /etc/profile.d/15-devbox-mise-shims.sh creates, so they cannot pass until
