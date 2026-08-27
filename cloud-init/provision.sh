@@ -336,6 +336,9 @@ command -v zoxide >/dev/null 2>&1 && eval "$(zoxide init zsh)"
 
 # starship prompt
 command -v starship >/dev/null 2>&1 && eval "$(starship init zsh)"
+
+# reload zsh config in-place (exec replaces the shell, so env/aliases/prompts rebuild cleanly)
+reload() { exec zsh; }
 ZRC
 fi
 ZSHRC
