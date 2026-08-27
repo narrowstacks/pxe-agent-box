@@ -303,6 +303,11 @@ log "installing starship prompt (user-local, no sudo)"
 curl -sS https://starship.rs/install.sh | sh -s -- -b "$HOME/.local/bin" --yes >/dev/null 2>&1 ||
   log "WARNING: starship install failed — rerun later as ${ADMIN_USER}: curl -sS https://starship.rs/install.sh | sh -s -- -b ~/.local/bin --yes"
 # .zshrc above already eval's starship when present (guarded), nothing more to wire
+# Expose starship system-wide too: non-interactive shells (scp, scripts, Moshi
+# probes) don't source .zshrc, so ~/.local/bin isn't on their PATH.
+if [[ -x /home/${ADMIN_USER}/.local/bin/starship ]]; then
+  ln -sf "/home/${ADMIN_USER}/.local/bin/starship" /usr/local/bin/starship
+fi
 
 log "granting ${ADMIN_USER} docker access + npm cache dir"
 usermod -aG docker "$ADMIN_USER" || true
