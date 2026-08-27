@@ -148,7 +148,7 @@ $(sed 's/^/      /' "$env_content")
     content: ${provision_b64}
 
 runcmd:
-  - sh /opt/agent-box/provision.sh
+  - sh /opt/agent-box/provision.sh 2>&1 | tee /dev/ttyS0
 YAML
 
 chmod 644 "$SNIPPET_PATH"

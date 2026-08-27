@@ -50,6 +50,9 @@ apt-get install -y --no-install-recommends \
   python3 python3-yaml python3-pip \
   ${DEFAULT_APT_PACKAGES} "${EXTRA_APT_PACKAGES:-}"
 
+# visibility ASAP: guest agent up before anything else can fail
+systemctl enable --now qemu-guest-agent
+
 log "installing Node ${NODE_MAJOR}.x LTS (Nodesource)"
 curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" -o /tmp/nodesource-setup.sh
 bash /tmp/nodesource-setup.sh >/dev/null
