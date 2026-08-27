@@ -231,8 +231,13 @@ Spec section 10 lists five unverified assumptions. This task turns them into a c
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
+CONFIG_FILE="${DEVBOX_CONFIG:-./config.sh}"
+[[ -r "$CONFIG_FILE" ]] || {
+  echo "ERROR: $CONFIG_FILE not found. Copy config.example.sh to config.sh and edit it." >&2
+  exit 1
+}
 # shellcheck source=/dev/null
-source ./config.sh
+source "$CONFIG_FILE"
 
 log()  { printf '\033[1;34m[preflight]\033[0m %s\n' "$*"; }
 ok()   { printf '  \033[1;32mok\033[0m   %s\n' "$*"; }
@@ -363,12 +368,34 @@ Salvage runs first because it reads the old box, and the old box occupies the VM
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")"
+
+# DEVBOX_CONFIG lets tests point at a fixture config. Without it, sourcing
+# the real config.sh would clobber any environment the caller set, and
+# tests/test-render.sh could never run on a machine without /root/.ssh.
+CONFIG_FILE="${DEVBOX_CONFIG:-./config.sh}"
+[[ -r "$CONFIG_FILE" ]] || {
+  echo "ERROR: $CONFIG_FILE not found. Copy config.example.sh to config.sh and edit it." >&2
+  exit 1
+}
 # shellcheck source=/dev/null
-source ./config.sh
+source "$CONFIG_FILE"
 
 log()  { printf '\n\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33mWARNING:\033[0m %s\n' "$*" >&2; }
 fail() { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
+
+# Shared by create and rebuild. Skips loopback, tailscale and docker
+# interfaces so the LAN address is what comes back.
+guest_ip() {
+  qm guest cmd "$1" network-get-interfaces 2>/dev/null \
+    | python3 -c 'import json,sys
+try: d=json.load(sys.stdin)
+except Exception: raise SystemExit
+for n in d:
+    if n.get("name","").startswith(("lo","tail","docker")): continue
+    for a in n.get("ip-addresses",[]):
+        if a.get("ip-address-type")=="ipv4": print(a["ip-address"]); raise SystemExit' || true
+}
 
 # Every state-changing command goes through run() so DRYRUN can intercept it.
 run() {
@@ -450,6 +477,13 @@ esac
 
 Run: `./scripts/lint.sh`
 Expected: clean. Note `shellcheck` will flag `$(basename ...)` inside a `local` assignment as SC2155 (masked return value); split the declaration if it exceeds warning severity.
+
+> **STEPS 3 AND 4 ARE SKIPPED.** The user destroyed VM 104 before execution
+> began, so there is no live box to salvage from and the ~8.2 MB of
+> claude/gh/herdr/moshi auth state is gone. Implement the verb (the spec
+> specifies it and it serves future migrations), lint it, and dry-run only
+> the argument handling. Re-establishing auth by hand once on the new box
+> replaces it. Do not attempt to run salvage against VMID 104.
 
 - [ ] **Step 3: Dry-run it on charon**
 
@@ -556,10 +590,10 @@ Expected: prints the `qm destroy`, `wget`, `qm create`, `qm template` lines. Rea
 - [ ] **Step 3: Build it for real**
 
 ```bash
-ssh root@charon 'cd /root/agent-box && ./devbox.sh template --force'
+ssh root@charon 'cd /root/agent-box && ./devbox.sh template'
 ```
 
-Expected: completes in roughly 5 minutes. The existing Ubuntu template at 9000 is destroyed here; VM 104 is still untouched.
+Expected: completes in roughly 5 minutes. `--force` is not needed: the user destroyed the old Ubuntu template before execution began, so VMID 9000 is free. Keep the `--force` code path; it is how future template upgrades work.
 
 - [ ] **Step 4: Verify the template config**
 
@@ -624,13 +658,22 @@ cat > "$tmp/key2.pub" <<'EOF'
 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAATEST2 test@two
 EOF
 
-out="$(
-  VMNAME="testbox" ADMIN_USER="dev" GUEST_TIMEZONE="UTC" \
-  DATA_MAP_ID="devdata" \
-  BOOTSTRAP_URL="https://example.invalid/bootstrap.sh" \
-  SSH_KEY_FILES="$tmp/key1.pub $tmp/key2.pub" \
-  ./devbox.sh render
-)"
+# A fixture config, not environment overrides: devbox.sh sources its config
+# file, which would clobber anything the caller exported.
+cat > "$tmp/config.sh" <<EOF
+VMNAME="testbox"
+ADMIN_USER="dev"
+GUEST_TIMEZONE="UTC"
+DATA_MAP_ID="devdata"
+BOOTSTRAP_URL="https://example.invalid/bootstrap.sh"
+MISE_TOOLS="node@lts"
+SWAP_SIZE_GB="8"
+ENABLE_UFW="1"
+EXTRA_APT_PACKAGES=""
+SSH_KEY_FILES="$tmp/key1.pub $tmp/key2.pub"
+EOF
+
+out="$(DEVBOX_CONFIG="$tmp/config.sh" ./devbox.sh render)"
 
 printf '%s\n' "$out" > "$tmp/rendered.yaml"
 
@@ -665,7 +708,10 @@ check "contains no tailscale auth key" $?
 ! grep -qE 'fs_setup|disk_setup' "$tmp/rendered.yaml"
 check "contains no fs_setup or disk_setup" $?
 
-! grep -q '@[A-Z_]*@' "$tmp/rendered.yaml"
+grep -q 'path: /etc/devbox.env' "$tmp/rendered.yaml" && grep -q 'MISE_TOOLS="node@lts"' "$tmp/rendered.yaml"
+check "renders /etc/devbox.env carrying host config into the guest" $?
+
+! grep -qE '@[A-Z_]+@' "$tmp/rendered.yaml"
 check "leaves no unsubstituted placeholders" $?
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
@@ -725,6 +771,19 @@ mounts:
   - [ "@DATA_MAP_ID@", "/data", "virtiofs", "defaults,nofail", "0", "0" ]
 
 write_files:
+  # The ONLY channel carrying host config.sh values into the guest.
+  # bootstrap.sh is curl'd standalone from GitHub and has no other way to
+  # learn them, so without this file every knob silently takes its default.
+  - path: /etc/devbox.env
+    permissions: "0644"
+    content: |
+      DEV_USER="@ADMIN_USER@"
+      MISE_TOOLS="@MISE_TOOLS@"
+      SWAP_SIZE_GB="@SWAP_SIZE_GB@"
+      ENABLE_UFW="@ENABLE_UFW@"
+      EXTRA_APT_PACKAGES="@EXTRA_APT_PACKAGES@"
+      BOOTSTRAP_URL="@BOOTSTRAP_URL@"
+
   # Persist tailscale's node identity so rebuilds keep the same MagicDNS
   # name instead of producing devbox-1, devbox-2, devbox-3.
   - path: /etc/systemd/system/tailscaled.service.d/override.conf
@@ -775,13 +834,21 @@ render_snippet() {
       -v tz="$GUEST_TIMEZONE" \
       -v mapid="$DATA_MAP_ID" \
       -v bootstrap="$BOOTSTRAP_URL" \
+      -v misetools="${MISE_TOOLS:-}" \
+      -v swapgb="${SWAP_SIZE_GB:-8}" \
+      -v enableufw="${ENABLE_UFW:-1}" \
+      -v extraapt="${EXTRA_APT_PACKAGES:-}" \
       -v keys="$keys" '
     { line = $0
-      gsub(/@VMNAME@/,        vmname,     line)
-      gsub(/@ADMIN_USER@/,    adminuser,  line)
-      gsub(/@GUEST_TIMEZONE@/, tz,        line)
-      gsub(/@DATA_MAP_ID@/,   mapid,      line)
-      gsub(/@BOOTSTRAP_URL@/, bootstrap,  line)
+      gsub(/@VMNAME@/,             vmname,     line)
+      gsub(/@ADMIN_USER@/,         adminuser,  line)
+      gsub(/@GUEST_TIMEZONE@/,     tz,         line)
+      gsub(/@DATA_MAP_ID@/,        mapid,      line)
+      gsub(/@BOOTSTRAP_URL@/,      bootstrap,  line)
+      gsub(/@MISE_TOOLS@/,         misetools,  line)
+      gsub(/@SWAP_SIZE_GB@/,       swapgb,     line)
+      gsub(/@ENABLE_UFW@/,         enableufw,  line)
+      gsub(/@EXTRA_APT_PACKAGES@/, extraapt,   line)
       if (line == "@SSH_KEYS@") { print keys } else { print line }
     }' "$tpl"
 }
@@ -836,6 +903,11 @@ The first version must be good enough for `create` in Task 7 to produce a reacha
 #      whose producer outlives its consumer.
 #
 set -euo pipefail
+
+# Host config.sh values arrive through this file, written by cloud-init.
+# Sourced BEFORE the defaults below so the defaults act as fallbacks.
+# shellcheck source=/dev/null
+[[ -r /etc/devbox.env ]] && source /etc/devbox.env
 
 DEV_USER="${DEV_USER:-dev}"
 DEV_HOME="/home/${DEV_USER}"
@@ -895,7 +967,7 @@ apt-get install -y --no-install-recommends \
   zsh zsh-autosuggestions zsh-syntax-highlighting \
   git git-lfs curl wget ca-certificates gnupg lsb-release \
   build-essential pkg-config libssl-dev \
-  tmux htop btop jq unzip zip rsync tree \
+  tmux htop btop jq unzip zip zstd rsync tree \
   ripgrep fd-find bat fzf zoxide \
   sqlite3 strace lsof ncdu \
   mosh ufw xvfb \
@@ -1152,14 +1224,7 @@ cmd_create() {
   log "waiting for the guest agent to report an address"
   local ip="" i
   for i in $(seq 1 60); do
-    ip="$(qm guest cmd "$VMID" network-get-interfaces 2>/dev/null \
-      | python3 -c 'import json,sys
-try: d=json.load(sys.stdin)
-except Exception: raise SystemExit
-for n in d:
-    if n.get("name","").startswith(("lo","tail","docker")): continue
-    for a in n.get("ip-addresses",[]):
-        if a.get("ip-address-type")=="ipv4": print(a["ip-address"]); raise SystemExit' || true)"
+    ip="$(guest_ip "$VMID")"
     [[ -n "$ip" ]] && break
     sleep 5
   done
@@ -1185,14 +1250,17 @@ ssh root@charon 'cd /root/agent-box && DRYRUN=1 ./devbox.sh create'
 
 Expected: dry-run aborts at the VMID-exists guard because 104 is still alive. That is correct behavior; read the rendered snippet in the output and confirm it looks right.
 
-- [ ] **Step 3: Confirm salvage, then destroy VM 104**
+- [ ] **Step 3: Confirm VMID 104 is free**
 
-This is the point of no return.
+Already satisfied: the user destroyed VM 104 before execution began, and
+there was no salvage to confirm. Just verify the id is actually free, since
+`create` refuses otherwise.
 
 ```bash
-ssh root@charon 'du -sh /srv/devdata/state/* && ls /srv/devdata/state/config-gh/hosts.yml'
-ssh root@charon 'qm stop 104 --timeout 60; qm destroy 104 --destroy-unreferenced-disks 0 --purge 1'
+ssh root@charon 'qm list'
 ```
+
+Expected: 104 absent. Only 206 and 800 should be running.
 
 - [ ] **Step 4: Create the box**
 
@@ -2056,14 +2124,7 @@ cmd_rebuild() {
   qm status "$VMID" >/dev/null 2>&1 || fail "VMID $VMID does not exist; use 'create'"
 
   local ip
-  ip="$(qm guest cmd "$VMID" network-get-interfaces 2>/dev/null \
-    | python3 -c 'import json,sys
-try: d=json.load(sys.stdin)
-except Exception: raise SystemExit
-for n in d:
-    if n.get("name","").startswith(("lo","tail","docker")): continue
-    for a in n.get("ip-addresses",[]):
-        if a.get("ip-address-type")=="ipv4": print(a["ip-address"]); raise SystemExit' || true)"
+  ip="$(guest_ip "$VMID")"
 
   if [[ "$force" != "--force" ]]; then
     [[ -n "$ip" ]] || fail "cannot reach the guest to check ~/work; pass --force to rebuild anyway"
