@@ -87,6 +87,13 @@ for p in .claude .claude.json .config/gh .config/herdr .config/moshi .config/ope
   check "$p is a symlink into /data, target exists and is owned by the admin user" $?
 done
 
+# An empty ~/.claude.json is not a harmless placeholder: claude parses it on
+# startup, reports "JSON Parse error: Unexpected EOF", backs the file up as
+# corrupted and refuses to run. jq -e exits non-zero on an empty file and on
+# a truncated one.
+remote 'jq -e . ~/.claude.json >/dev/null'
+check ".claude.json holds parseable JSON, not an empty placeholder" $?
+
 # tailscaled's identity is root-owned and outside /home, so it is checked
 # separately. bootstrap.sh persists it by overriding ExecStart's --state
 # flag, so assert the effective flag systemd would run, not just a file on
@@ -122,7 +129,9 @@ remote 'grep -q "^# devbox-managed zshrc" ~/.zshrc'
 # shellcheck disable=SC2088  # description text, not an executed path
 check "~/.zshrc carries the managed marker" $?
 
-remote '! grep -qE "promptinit|prompt adam1" ~/.zshrc'
+# Anchored to the start of a line: the generated zshrc explains in a comment
+# that it registers no prompt, and an unanchored grep matches that comment.
+remote '! grep -qE "^[[:space:]]*(autoload .*promptinit|promptinit|prompt [a-z])" ~/.zshrc'
 # shellcheck disable=SC2088  # description text, not an executed path
 check "~/.zshrc registers no competing prompt" $?
 

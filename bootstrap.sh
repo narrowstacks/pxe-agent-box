@@ -177,9 +177,14 @@ link_state() {
   chown -R "1000:1000" "$src"
 }
 
-# Same, for entries that must be files rather than directories.
+# Same, for entries that must be files rather than directories. The optional
+# third argument seeds the placeholder: a zero-byte file is fine for a
+# gitconfig or a known_hosts, but a tool that parses its config on startup
+# reads an empty file as corrupt. When a seed is given, an already-empty
+# state file is filled in too, so boxes built before the seed existed heal
+# on the next run.
 link_state_file() {
-  local src="${DATA}/state/$1" dst="${DEV_HOME}/$2"
+  local src="${DATA}/state/$1" dst="${DEV_HOME}/$2" seed="${3-}"
   mkdir -p "$(dirname "$src")" "$(dirname "$dst")"
   if [[ -f "$dst" && ! -L "$dst" ]]; then
     # Same precedence as link_state: existing salvaged state wins, and a
@@ -188,7 +193,11 @@ link_state_file() {
       || fail "could not copy ${dst} to ${src}; refusing to delete the original"
     rm -f "$dst"
   fi
-  [[ -e "$src" ]] || : > "$src"
+  if [[ -n "$seed" ]]; then
+    [[ -s "$src" ]] || printf '%s\n' "$seed" > "$src"
+  else
+    [[ -e "$src" ]] || : > "$src"
+  fi
   ln -sfn "$src" "$dst"
   chown "1000:1000" "$src"
 }
@@ -210,7 +219,10 @@ link_state_file_optional() {
 }
 
 link_state      claude           .claude
-link_state_file claude.json      .claude.json
+# claude refuses to start on an empty ~/.claude.json ('JSON Parse error:
+# Unexpected EOF') and backs the file up as corrupt, so the placeholder has
+# to be a parseable empty object.
+link_state_file claude.json      .claude.json '{}'
 link_state      config-gh        .config/gh
 link_state      config-herdr     .config/herdr
 link_state      config-moshi     .config/moshi
