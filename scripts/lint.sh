@@ -17,8 +17,11 @@ done
 if command -v shellcheck >/dev/null 2>&1; then
   # config.sh files are sourced, not executed; tell shellcheck so.
   shellcheck -S warning "${files[@]}" || fail=1
+elif [[ "${LINT_ALLOW_NO_SHELLCHECK:-0}" == "1" ]]; then
+  echo "WARNING: shellcheck not installed, skipping (LINT_ALLOW_NO_SHELLCHECK=1)" >&2
 else
-  echo "WARNING: shellcheck not installed (brew install shellcheck)" >&2
+  echo "ERROR: shellcheck not installed. Run 'brew install shellcheck', or set LINT_ALLOW_NO_SHELLCHECK=1 to skip." >&2
+  fail=1
 fi
 
 # Every file destined for /etc/profile.d must parse under dash, because
