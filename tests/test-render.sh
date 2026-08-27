@@ -83,5 +83,55 @@ check "renders /etc/devbox.env carrying host config into the guest" $?
 ! grep -qE '@[A-Z_]+@' "$tmp/rendered.yaml"
 check "leaves no unsubstituted placeholders" $?
 
+# Substring checks above cannot tell "nested under the right parent" from
+# "present somewhere in the file". Parse the structure instead.
+python3 -c 'import sys,yaml
+d = yaml.safe_load(open(sys.argv[1]))
+k = d["users"][0]["ssh_authorized_keys"]
+assert len(k) == 2, k
+assert any("TEST1" in x for x in k) and any("TEST2" in x for x in k), k' "$tmp/rendered.yaml"
+check "ssh keys nest under users[0].ssh_authorized_keys, exactly 2" $?
+
+python3 -c 'import sys,yaml
+d = yaml.safe_load(open(sys.argv[1]))
+assert d["users"][0]["uid"] == 1000' "$tmp/rendered.yaml"
+check "admin user is structurally uid 1000" $?
+
+# Injection regression: a config value containing a literal backslash-n
+# (NOT a real newline) must not be able to inject a sibling YAML key.
+# Written with a quoted heredoc so the shell does not interpret \n itself.
+cat > "$tmp/inject-config.sh" <<'EOF'
+VMNAME="testbox\nINJECTED: yes"
+ADMIN_USER="dev"
+GUEST_TIMEZONE="UTC"
+DATA_MAP_ID="devdata"
+BOOTSTRAP_URL="https://example.invalid/bootstrap.sh"
+MISE_TOOLS="node@lts"
+SWAP_SIZE_GB="8"
+ENABLE_UFW="1"
+EXTRA_APT_PACKAGES=""
+CLOUD_IMAGE_URL="https://example.invalid/debian.qcow2"
+EOF
+printf 'SSH_KEY_FILES="%s/key1.pub %s/key2.pub"\n' "$tmp" "$tmp" >> "$tmp/inject-config.sh"
+
+inject_out="$(DEVBOX_CONFIG="$tmp/inject-config.sh" ./devbox.sh render)"
+printf '%s\n' "$inject_out" > "$tmp/inject.yaml"
+
+# Checked at the byte level rather than through yaml.safe_load: a plain
+# YAML scalar cannot itself contain ": " (colon-space), so the correct,
+# non-injected rendering of "testbox\nINJECTED: yes" folded onto one
+# physical line is not valid YAML on its own (safe_load raises). That is
+# the fix working, not a new bug, so parseability is not what this test
+# should assert. The property that matters is byte-level: no real newline
+# was ever manufactured from the literal backslash-n, so the payload stays
+# on hostname's line intact and no bare top-level "INJECTED:" line exists.
+literal_intact=0
+grep -qF 'testbox\nINJECTED: yes' "$tmp/inject.yaml" || literal_intact=1
+no_injected_key=0
+grep -qE '^INJECTED:' "$tmp/inject.yaml" && no_injected_key=1
+inject_result=0
+[[ $literal_intact -eq 0 && $no_injected_key -eq 0 ]] || inject_result=1
+check "a literal backslash-n in a config value cannot inject a YAML key" $inject_result
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ $fail -eq 0 ]]

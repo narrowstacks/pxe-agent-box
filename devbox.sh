@@ -189,36 +189,46 @@ render_snippet() {
   done
   [[ -n "$keys" ]] || fail "no SSH keys resolved from SSH_KEY_FILES"
   keys="${keys%$'\n'}"
-  # -v assignment values are lexed like an awk string literal (POSIX), so a
-  # raw newline byte in the value is a parse error ("newline in string") on
-  # awk implementations that enforce this strictly. Pass the escape sequence
-  # instead; awk's own lexer turns \n back into a real newline when it reads
-  # the -v value, so this needs no unescaping inside the program below.
-  keys="${keys//$'\n'/\\n}"
 
-  # Substitute with awk rather than sed so key material containing slashes
-  # or ampersands cannot corrupt the output.
-  awk -v vmname="$VMNAME" \
-      -v adminuser="$ADMIN_USER" \
-      -v tz="$GUEST_TIMEZONE" \
-      -v mapid="$DATA_MAP_ID" \
-      -v bootstrap="$BOOTSTRAP_URL" \
-      -v misetools="${MISE_TOOLS:-}" \
-      -v swapgb="${SWAP_SIZE_GB:-8}" \
-      -v enableufw="${ENABLE_UFW:-1}" \
-      -v extraapt="${EXTRA_APT_PACKAGES:-}" \
-      -v keys="$keys" '
-    { line = $0
-      gsub(/@VMNAME@/,             vmname,     line)
-      gsub(/@ADMIN_USER@/,         adminuser,  line)
-      gsub(/@GUEST_TIMEZONE@/,     tz,         line)
-      gsub(/@DATA_MAP_ID@/,        mapid,      line)
-      gsub(/@BOOTSTRAP_URL@/,      bootstrap,  line)
-      gsub(/@MISE_TOOLS@/,         misetools,  line)
-      gsub(/@SWAP_SIZE_GB@/,       swapgb,     line)
-      gsub(/@ENABLE_UFW@/,         enableufw,  line)
-      gsub(/@EXTRA_APT_PACKAGES@/, extraapt,   line)
-      if (line == "@SSH_KEYS@") { print keys } else { print line }
+  # Values reach awk through ENVIRON, never through -v: POSIX lexes -v
+  # assignments as string literals, so a value containing a literal
+  # backslash-n becomes a REAL newline and injects a sibling YAML key.
+  # Substitution is literal index/substr rather than gsub, because gsub
+  # treats & in the replacement as "the matched text". Neither construct
+  # processes escapes, so values pass through as bytes.
+  DEVBOX_VMNAME="$VMNAME" \
+  DEVBOX_ADMIN_USER="$ADMIN_USER" \
+  DEVBOX_TZ="$GUEST_TIMEZONE" \
+  DEVBOX_MAPID="$DATA_MAP_ID" \
+  DEVBOX_BOOTSTRAP="$BOOTSTRAP_URL" \
+  DEVBOX_MISETOOLS="${MISE_TOOLS:-}" \
+  DEVBOX_SWAPGB="${SWAP_SIZE_GB:-8}" \
+  DEVBOX_ENABLEUFW="${ENABLE_UFW:-1}" \
+  DEVBOX_EXTRAAPT="${EXTRA_APT_PACKAGES:-}" \
+  DEVBOX_KEYS="$keys" \
+  awk '
+    # Literal replace. Never rescans what it just substituted, so a value
+    # containing its own token cannot loop forever.
+    function subst(s, token, value,   pos, out) {
+      out = ""
+      while ((pos = index(s, token)) > 0) {
+        out = out substr(s, 1, pos - 1) value
+        s = substr(s, pos + length(token))
+      }
+      return out s
+    }
+    {
+      line = $0
+      line = subst(line, "@VMNAME@",             ENVIRON["DEVBOX_VMNAME"])
+      line = subst(line, "@ADMIN_USER@",         ENVIRON["DEVBOX_ADMIN_USER"])
+      line = subst(line, "@GUEST_TIMEZONE@",     ENVIRON["DEVBOX_TZ"])
+      line = subst(line, "@DATA_MAP_ID@",        ENVIRON["DEVBOX_MAPID"])
+      line = subst(line, "@BOOTSTRAP_URL@",      ENVIRON["DEVBOX_BOOTSTRAP"])
+      line = subst(line, "@MISE_TOOLS@",         ENVIRON["DEVBOX_MISETOOLS"])
+      line = subst(line, "@SWAP_SIZE_GB@",       ENVIRON["DEVBOX_SWAPGB"])
+      line = subst(line, "@ENABLE_UFW@",         ENVIRON["DEVBOX_ENABLEUFW"])
+      line = subst(line, "@EXTRA_APT_PACKAGES@", ENVIRON["DEVBOX_EXTRAAPT"])
+      if (line == "@SSH_KEYS@") { print ENVIRON["DEVBOX_KEYS"] } else { print line }
     }' "$tpl"
 }
 
