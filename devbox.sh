@@ -321,11 +321,101 @@ cmd_create() {
   fi
 }
 
+##### rebuild #####
+
+# ~/work lives on the VM disk, not on /data, so a rebuild destroys it. Refuse
+# unless every repo is clean AND pushed. This gate is the reason the
+# state-only persistence split is safe.
+assert_work_tree_clean() {
+  local ip="$1"
+  log "checking ~/work for unsaved state"
+
+  local dirty
+  dirty="$(ssh -o BatchMode=yes "${ADMIN_USER}@${ip}" 'bash -s' <<'EOF'
+set -uo pipefail
+shopt -s nullglob
+for d in "$HOME"/work/*/; do
+  name="$(basename "$d")"
+  if [[ -d "$d/.git" ]]; then
+    if [[ -n "$(git -C "$d" status --porcelain 2>/dev/null)" ]]; then
+      echo "uncommitted changes: $name"
+    fi
+    upstream="$(git -C "$d" rev-parse --abbrev-ref '@{u}' 2>/dev/null || true)"
+    if [[ -z "$upstream" ]]; then
+      echo "no upstream branch: $name"
+    elif [[ -n "$(git -C "$d" log '@{u}..' --oneline 2>/dev/null)" ]]; then
+      echo "unpushed commits: $name"
+    fi
+  elif [[ -n "$(ls -A "$d" 2>/dev/null)" ]]; then
+    echo "non-git directory with contents: $name"
+  fi
+done
+EOF
+)"
+
+  # shellcheck disable=SC2088  # literal log text, not an unexpanded path
+  [[ -z "$dirty" ]] && { log "~/work is clean"; return 0; }
+
+  printf '\n\033[1;31mrefusing to rebuild:\033[0m ~/work has unsaved state\n' >&2
+  printf '%s\n' "$dirty" >&2
+  printf '\nCommit and push, or pass --force to discard it.\n' >&2
+  exit 1
+}
+
+snapshot_work() {
+  local ip="$1"
+  local stamp
+  stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  log "snapshotting ~/work to ${DATA_HOST_DIR}/work-snapshots/${stamp}.tar.zst"
+
+  # Belt and braces behind the gate, not the primary mechanism. Excludes the
+  # regenerable directories so the tarball stays small.
+  ssh -o BatchMode=yes "${ADMIN_USER}@${ip}" \
+    "tar -C \"\$HOME\" --exclude=node_modules --exclude=.venv --exclude=target --exclude=dist -cf - work 2>/dev/null | zstd -q -T0" \
+    > "${DATA_HOST_DIR}/work-snapshots/${stamp}.tar.zst" \
+    || warn "work snapshot failed; continuing because the clean-tree gate already passed"
+
+  # Keep the last three.
+  local old
+  mapfile -t old < <(ls -1t "${DATA_HOST_DIR}/work-snapshots"/*.tar.zst 2>/dev/null | tail -n +4)
+  for old_file in "${old[@]:-}"; do
+    [[ -n "$old_file" ]] && rm -f "$old_file"
+  done
+}
+
+cmd_rebuild() {
+  local force="${1:-}"
+
+  qm status "$VMID" >/dev/null 2>&1 || fail "VMID $VMID does not exist; use 'create'"
+
+  local ip
+  ip="$(guest_ip "$VMID")"
+
+  if [[ "$force" != "--force" ]]; then
+    [[ -n "$ip" ]] || fail "cannot reach the guest to check ~/work; pass --force to rebuild anyway"
+    assert_work_tree_clean "$ip"
+    snapshot_work "$ip"
+  fi
+
+  log "rebuilding ${VMID}. ${DATA_HOST_DIR} on the host is NOT touched."
+  read -rp "type the VM name to confirm (${VMNAME}): " confirm
+  [[ "$confirm" == "$VMNAME" ]] || fail "aborted"
+
+  run qm stop "$VMID" --timeout 60 || true
+  # --destroy-unreferenced-disks 0 so nothing outside this VM's config is
+  # touched. $DATA_HOST_DIR is a host directory and is never referenced by
+  # the VM config at all, so no destroy path can reach it.
+  run qm destroy "$VMID" --destroy-unreferenced-disks 0 --purge 1
+
+  cmd_create
+}
+
 case "${1:-}" in
   preflight) ./scripts/preflight.sh ;;
   salvage)   shift; cmd_salvage "$@" ;;
   template)  shift; cmd_template "$@" ;;
   render)    render_snippet ;;
   create)    cmd_create ;;
+  rebuild)   shift; cmd_rebuild "$@" ;;
   *) echo "usage: $0 {preflight|salvage|template|render|create|rebuild}" >&2; exit 1 ;;
 esac
