@@ -581,7 +581,12 @@ cmd_template() {
 
   if [[ ! -f "$IMAGE_PATH" ]]; then
     log "downloading $(basename "$CLOUD_IMAGE_URL")"
-    run wget -qO "$IMAGE_PATH" "$CLOUD_IMAGE_URL"
+    # Download to a temp name and rename only on success. wget writes
+    # partial bytes straight to its target, so a failed download would
+    # leave a truncated file that the next run's -f test accepts as
+    # valid, feeding a corrupt image to 'qm create --import-from'.
+    run wget -qO "${IMAGE_PATH}.partial" "$CLOUD_IMAGE_URL"
+    run mv "${IMAGE_PATH}.partial" "$IMAGE_PATH"
   fi
 
   log "creating template $TEMPLATE_ID"
