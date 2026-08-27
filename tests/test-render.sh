@@ -66,8 +66,8 @@ check "embeds every SSH key" $?
 grep -q 'virtiofs' "$tmp/rendered.yaml" && grep -q '/data' "$tmp/rendered.yaml"
 check "mounts /data over virtiofs" $?
 
-grep -q 'TS_STATE_DIR=/data/state/tailscale' "$tmp/rendered.yaml"
-check "sets the tailscaled state dir override" $?
+! grep -q 'Environment=TS_STATE_DIR' "$tmp/rendered.yaml"
+check "does not carry the dead TS_STATE_DIR override (tailscaled ignores it; bootstrap.sh symlinks the state dir instead)" $?
 
 # No Tailscale auth key belongs in a snippet. State on /data means tailscaled
 # comes back authenticated after a rebuild without one.

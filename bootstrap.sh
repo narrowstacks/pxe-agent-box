@@ -68,6 +68,11 @@ exec 9>/var/lock/devbox-bootstrap.lock
 flock -n 9 || fail "another devbox-bootstrap is already running"
 
 id "$DEV_USER" >/dev/null 2>&1 || fail "user $DEV_USER does not exist"
+# /data ownership below is chowned to a hardcoded 1000:1000 in ~14 places.
+# If the uid-1000 pin in cloud-init ever fails, this guard is what stops
+# bootstrap from silently chowning /data/state to the wrong user.
+[[ "$(id -u "$DEV_USER")" == "1000" ]] \
+  || fail "$DEV_USER is uid $(id -u "$DEV_USER"), not 1000; /data ownership throughout this script assumes uid 1000, refusing to run against a wrong-uid user"
 mountpoint -q "$DATA" || fail "$DATA is not a mountpoint; virtiofs did not come up"
 
 export DEBIAN_FRONTEND=noninteractive
@@ -198,6 +203,24 @@ link_state_file() {
   chown "1000:1000" "$src"
 }
 
+# Same as link_state_file, but never fabricates a placeholder: if the file
+# has never existed on either side, it is skipped entirely rather than
+# creating an empty stand-in. Used for a file whose mere existence has
+# meaning (an ssh client key an empty file would still get loaded, and then
+# rejected, not just be inert).
+link_state_file_optional() {
+  local src="${DATA}/state/$1" dst="${DEV_HOME}/$2"
+  [[ -e "$dst" || -e "$src" ]] || return 0
+  mkdir -p "$(dirname "$src")" "$(dirname "$dst")"
+  if [[ -f "$dst" && ! -L "$dst" ]]; then
+    [[ -e "$src" ]] || cp -a "$dst" "$src" \
+      || fail "could not copy ${dst} to ${src}; refusing to delete the original"
+    rm -f "$dst"
+  fi
+  ln -sfn "$src" "$dst"
+  chown "1000:1000" "$src"
+}
+
 link_state      claude           .claude
 link_state_file claude.json      .claude.json
 link_state      config-gh        .config/gh
@@ -217,6 +240,11 @@ mkdir -p "${DEV_HOME}/.ssh" "${DATA}/state/ssh"
 chmod 700 "${DEV_HOME}/.ssh"
 chown 1000:1000 "${DEV_HOME}/.ssh"
 link_state_file ssh/known_hosts   .ssh/known_hosts
+# Spec 3.3: a stable outbound git identity across rebuilds. Not generated
+# here, only persisted if the operator has dropped one in; a missing key
+# stays missing rather than getting fabricated.
+link_state_file_optional ssh/id_ed25519      .ssh/id_ed25519
+link_state_file_optional ssh/id_ed25519.pub  .ssh/id_ed25519.pub
 chown -R 1000:1000 "${DATA}/state/ssh"
 
 mkdir -p "${DATA}/work-snapshots"
@@ -282,11 +310,63 @@ if ! command -v tailscale >/dev/null 2>&1; then
     -o /etc/apt/sources.list.d/tailscale.list
   apt-get update -qq
   apt-get install -y tailscale
-  systemctl enable --now tailscaled
 fi
-# No 'tailscale up' here and no auth key anywhere. TS_STATE_DIR points at
-# /data, so after the one manual 'sudo tailscale up' the identity survives
-# every rebuild and the box keeps its MagicDNS name.
+
+# tailscaled's own ExecStart hardcodes --state=/var/lib/tailscale/tailscaled.state,
+# which wins over any TS_STATE_DIR env var: that variable is read by
+# upstream's CONTAINERBOOT wrapper, not by tailscaled itself. An env
+# drop-in was tried first and confirmed on a live box to be a no-op.
+#
+# Symlinking /var/lib/tailscale itself (link_state's usual discipline) was
+# tried second and FAILS HARD on this box: the unit also declares
+# StateDirectory=tailscale, and systemd's own exec-time setup for that
+# directive does its own directory chase over the symlink and virtiofs,
+# erroring "Too many levels of symbolic links" (systemd exit
+# 238/STATE_DIRECTORY) and never starting tailscaled at all. Confirmed by
+# restarting tailscaled after installing the symlink; reverted.
+#
+# Overriding ExecStart to point --state directly at /data sidesteps
+# StateDirectory entirely, since that directive only governs
+# /var/lib/tailscale, which this no longer touches. It duplicates
+# upstream's command line (PORT and FLAGS still come from the unit's own
+# EnvironmentFile=/etc/default/tailscaled, untouched by this drop-in), so if
+# a future tailscale package changes its ExecStart, this needs updating too.
+TAILSCALE_DROPIN=/etc/systemd/system/tailscaled.service.d/state-on-data.conf
+if ! grep -q '^ExecStart=/usr/sbin/tailscaled --state=/data/state/tailscale/tailscaled.state' "$TAILSCALE_DROPIN" 2>/dev/null; then
+  log "persisting tailscale state on /data"
+  systemctl stop tailscaled 2>/dev/null || true
+  mkdir -p "${DATA}/state/tailscale"
+  # Same discipline as link_state: copy any existing identity in, and never
+  # delete the original unless the copy succeeded. Leaving the orphaned
+  # on-disk copy behind is harmless once ExecStart stops pointing at it.
+  if [[ -f /var/lib/tailscale/tailscaled.state && ! -e "${DATA}/state/tailscale/tailscaled.state" ]]; then
+    cp -a /var/lib/tailscale/tailscaled.state "${DATA}/state/tailscale/tailscaled.state" \
+      || fail "could not copy /var/lib/tailscale/tailscaled.state into ${DATA}/state/tailscale; refusing to leave tailscale state stranded"
+  fi
+  install -d -m 0755 /etc/systemd/system/tailscaled.service.d
+  cat >"$TAILSCALE_DROPIN" <<'EOF'
+[Service]
+ExecStart=
+ExecStart=/usr/sbin/tailscaled --state=/data/state/tailscale/tailscaled.state --socket=/run/tailscale/tailscaled.sock --port=${PORT} $FLAGS
+EOF
+  systemctl daemon-reload
+fi
+chown -R root:root "${DATA}/state/tailscale"
+chmod 700 "${DATA}/state/tailscale"
+
+# A drop-in from the earlier, broken design (TS_STATE_DIR, which tailscaled
+# never reads) is harmless but wrong; remove it so nothing on the box still
+# documents a mechanism that does not work.
+if [[ -f /etc/systemd/system/tailscaled.service.d/override.conf ]]; then
+  rm -f /etc/systemd/system/tailscaled.service.d/override.conf
+  systemctl daemon-reload
+fi
+
+systemctl enable --now tailscaled
+# No 'tailscale up' here and no auth key anywhere. The node identity, once
+# set by the one manual 'sudo tailscale up', now lives under /data via the
+# ExecStart override above and survives every rebuild along with the
+# MagicDNS name.
 
 if ! command -v gh >/dev/null 2>&1; then
   log "gh"

@@ -166,10 +166,14 @@ that's already been pushed.
 ## What persists and what doesn't
 
 - **`/data` (virtiofs, backed by `DATA_HOST_DIR` on the host) survives every
-  rebuild.** Auth state (`~/.claude`, `~/.config/gh`, `~/.config/herdr`,
-  `~/.config/moshi`, `~/.config/mise`, `~/.gitconfig`, `~/.ssh/known_hosts`),
-  the managed `~/.zshrc`/`~/.zshenv`, and Tailscale's node identity (so the
-  MagicDNS name doesn't change) all live there as symlink targets.
+  rebuild.** Auth state (`~/.claude`, `~/.claude.json`, `~/.config/gh`,
+  `~/.config/herdr`, `~/.config/moshi`, `~/.config/opencode`,
+  `~/.config/mise`, `~/.codex`, `~/.pi`, `~/.zsh_history.d`, `~/.gitconfig`,
+  `~/.ssh/known_hosts`, and, if you've dropped one in, `~/.ssh/id_ed25519{,.pub}`
+  for a stable outbound git identity), the managed `~/.zshrc`/`~/.zshenv`,
+  and Tailscale's node identity (`/var/lib/tailscale` is symlinked to
+  `/data/state/tailscale`, so the MagicDNS name doesn't change) all live
+  there as symlink targets.
 - **`~/work` does NOT survive a rebuild.** It lives on the VM's own disk,
   which `rebuild` destroys and recreates. That's exactly why `rebuild`
   refuses to run against a dirty `~/work` and snapshots it to

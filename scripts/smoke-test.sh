@@ -77,10 +77,31 @@ check "every /etc/profile.d file parses under dash" $?
 
 printf '\n\033[1;34m== state persistence ==\033[0m\n'
 
-for p in .claude .claude.json .config/gh .config/herdr .config/mise .gitconfig; do
-  remote "test -L ~/$p && readlink -f ~/$p | grep -q '^/data/'"
-  check "$p is a symlink into /data" $?
+# All 13 state links bootstrap.sh creates under $DEV_HOME (~/.zshrc and
+# ~/.zshenv are asserted separately below, in "shell configuration").
+# 'readlink -f | grep' alone passes on a BROKEN symlink (readlink -f
+# resolves the link's syntax without caring whether the target exists), so
+# test -e checks the target actually exists and test -O checks it is owned
+# by the admin user, per the spec.
+for p in .claude .claude.json .config/gh .config/herdr .config/moshi .config/opencode .config/mise .codex .pi .zsh_history.d .gitconfig .ssh/known_hosts .zshenv; do
+  remote "test -L ~/$p && readlink -f ~/$p | grep -q '^/data/' && test -e ~/$p && test -O ~/$p"
+  check "$p is a symlink into /data, target exists and is owned by the admin user" $?
 done
+
+# tailscaled's node identity is not under $DEV_HOME (it is root-owned,
+# outside /home), so it is checked separately. This is the assertion for
+# C1: tailscaled's own ExecStart hardcodes --state=/var/lib/tailscale/...,
+# which a TS_STATE_DIR env var never overrides (that variable is read by
+# upstream's CONTAINERBOOT wrapper, not tailscaled), and a symlinked
+# /var/lib/tailscale fails the unit outright (StateDirectory= vs. a
+# symlinked target over virtiofs). bootstrap.sh instead overrides
+# ExecStart's --state flag directly, so check the EFFECTIVE flag systemd
+# would actually run, not just a file on disk that nothing may read from.
+remote 'systemctl show tailscaled -p ExecStart --no-pager | grep -q -- "--state=/data/"'
+check "tailscaled's effective --state flag resolves under /data (survives a rebuild)" $?
+
+remote 'sudo test -e /data/state/tailscale/tailscaled.state'
+check "tailscaled's state file exists under /data" $?
 
 printf '\n\033[1;34m== root-tree tools ==\033[0m\n'
 

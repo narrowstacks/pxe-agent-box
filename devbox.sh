@@ -3,7 +3,8 @@
 # devbox.sh - runs on the PROXMOX HOST as root.
 #
 #   ./devbox.sh preflight  Verify the host can support the design.
-#   ./devbox.sh salvage    Copy auth state off a running box into $DATA_HOST_DIR.
+#   ./devbox.sh salvage <vmid>  Copy auth state off a running box into $DATA_HOST_DIR.
+#                           <vmid> is required and must not be the live $VMID.
 #   ./devbox.sh template   Build the base template from the Debian cloud image.
 #   ./devbox.sh render     Print the cloud-init snippet without writing it.
 #   ./devbox.sh create     Clone the template into the running dev box.
@@ -69,7 +70,15 @@ SALVAGE_MAP=(
 )
 
 cmd_salvage() {
-  local src_vmid="${1:-$VMID}"
+  # No default. A bare 'devbox.sh salvage' used to fall back to $VMID, the
+  # live box: that tars its own state out and then, below, rm -rf's and
+  # mv's onto the very paths ~/.claude and ~/.config/gh are symlinked to,
+  # while the box is running and virtiofs is cache=always. Both the missing
+  # argument and the live-VMID case must refuse before touching anything.
+  [[ $# -ge 1 ]] || fail "usage: devbox.sh salvage <vmid>  (no default; salvage requires an explicit SOURCE vmid, distinct from the live \$VMID in config.sh)"
+  local src_vmid="$1"
+  [[ "$src_vmid" != "$VMID" ]] \
+    || fail "refusing: VMID $src_vmid is the live box (\$VMID in config.sh). Salvage rm -rf's and overwrites \$DATA_HOST_DIR/state, which the live box's ~/.claude, ~/.config/gh etc. are symlinked to; running it against the live VMID would corrupt the running box's own auth state. Pass the OLD/replaced box's vmid instead."
   qm status "$src_vmid" 2>/dev/null | grep -q running \
     || fail "VM $src_vmid is not running; salvage reads a live box"
 
@@ -474,6 +483,12 @@ sys.exit(0 if d.get("exited") == 1 and d.get("exitcode", 1) == 0 else 1)' 2>/dev
 cmd_rebuild() {
   local force="${1:-}"
 
+  # Run before the destroy, not after: cmd_create's own preflight call runs
+  # AFTER 'qm destroy' below, so a fallible network gate failing there would
+  # leave the operator with no VM and a hard exit. Failing here instead
+  # costs nothing, the box still exists.
+  ./scripts/preflight.sh || fail "preflight failed"
+
   qm status "$VMID" </dev/null >/dev/null 2>&1 || fail "VMID $VMID does not exist; use 'create'"
 
   # Reported for the operator's benefit only; the checks below go through
@@ -507,5 +522,5 @@ case "${1:-}" in
   render)    render_snippet ;;
   create)    cmd_create ;;
   rebuild)   shift; cmd_rebuild "$@" ;;
-  *) echo "usage: $0 {preflight|salvage|template|render|create|rebuild}" >&2; exit 1 ;;
+  *) echo "usage: $0 {preflight|salvage <vmid>|template|render|create|rebuild}" >&2; exit 1 ;;
 esac

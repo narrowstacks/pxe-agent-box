@@ -54,13 +54,14 @@ write_files:
       EXTRA_APT_PACKAGES="@EXTRA_APT_PACKAGES@"
       BOOTSTRAP_URL="@BOOTSTRAP_URL@"
 
-  # Persist tailscale's node identity so rebuilds keep the same MagicDNS
-  # name instead of producing devbox-1, devbox-2, devbox-3.
-  - path: /etc/systemd/system/tailscaled.service.d/override.conf
-    permissions: "0644"
-    content: |
-      [Service]
-      Environment=TS_STATE_DIR=/data/state/tailscale
+# Tailscale's node identity is persisted by bootstrap.sh, which overrides
+# tailscaled's ExecStart to point --state directly at /data. tailscaled's
+# own ExecStart hardcodes --state=..., so a TS_STATE_DIR env drop-in here
+# (as a prior design tried) is a no-op: that env var is read by upstream's
+# CONTAINERBOOT wrapper, not by tailscaled. A symlinked /var/lib/tailscale
+# was tried next and fails hard, since the unit also declares
+# StateDirectory=tailscale and systemd's own directory chase over a
+# symlink+virtiofs errors out (see bootstrap.sh for the full account).
 
 runcmd:
   - systemctl enable --now qemu-guest-agent
