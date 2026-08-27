@@ -138,8 +138,10 @@ $(sed 's/^/      /' "$env_content")
     content: ${provision_b64}
 
 runcmd:
-  # bash, not sh — provision.sh uses bashisms (pipefail); dash dies on line 11
-  - bash /opt/agent-box/provision.sh 2>&1 | tee /dev/ttyS0
+  # bash, not sh — provision.sh uses bashisms (pipefail); dash dies on line 11.
+  # Serial-console mirroring happens inside the script (process substitution);
+  # no pipe here so cloud-init sees the script's true exit code.
+  - bash /opt/agent-box/provision.sh
 YAML
 
 chmod 644 "$SNIPPET_PATH"

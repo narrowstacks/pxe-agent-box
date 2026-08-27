@@ -37,6 +37,14 @@ DEFAULT_APT_PACKAGES="ripgrep fd-find fzf zoxide mosh tree ncdu sqlite3 strace l
 export DEBIAN_FRONTEND=noninteractive
 
 log() { printf '\033[1;34m[provision]\033[0m %s\n' "$*"; }
+
+# Mirror output to the serial console for out-of-band debugging. Done HERE via
+# process substitution, not in runcmd's 'bash | tee': a tee write failure to
+# the console (EIO when serial-getty owns the line) would surface as the
+# pipeline's exit code and fail cloud-init even on success.
+if [[ -w /dev/ttyS0 ]]; then
+  exec > >(tee /dev/ttyS0) 2>&1
+fi
 stamp() {
   mkdir -p /var/lib/agent-box
   date -u +"%Y-%m-%dT%H:%M:%SZ" >/var/lib/agent-box/provisioned-at
@@ -60,12 +68,11 @@ apt-get install -y nodejs
 
 npm install -g pnpm@latest
 npm install -g @openai/codex
-# opencode's platform-specific optional deps can mismatch glibc/musl and fail
-# the whole install (EBADPLATFORM). Retry once, then continue — it is re-checked
-# in the verification section below rather than aborting provisioning.
-npm install -g opencode-ai ||
-  npm install -g --force opencode-ai ||
-  log "WARNING: opencode install failed — retry later: npm i -g opencode-ai"
+# opencode's meta-package resolves a musl optional dep on glibc hosts
+# (EBADPLATFORM, upstream packaging bug). Install the glibc-native binary
+# package directly — exactly what npm's own error message recommends.
+npm install -g opencode-linux-x64 ||
+  log "WARNING: opencode install failed — retry later: npm i -g opencode-linux-x64"
 # pi explicitly documents --ignore-scripts: no lifecycle scripts needed for normal installs
 npm install -g --ignore-scripts @earendil-works/pi-coding-agent
 
@@ -158,8 +165,8 @@ log "installing moshi-hook (companion daemon for the Moshi iOS terminal)"
 # Installer ignores INSTALL_DIR env passed to curl (never reaches sh) and
 # lands in ~root/.local/bin regardless — pass env to sh, then copy binaries
 # onto the system PATH (copies, not symlinks: /root is 0700).
-curl -fsSL https://getmoshi.app/install.sh \
-  | MOSHI_HOOK_SKIP_FIRST_RUN=1 INSTALL_DIR=/usr/local/bin sh ||
+curl -fsSL https://getmoshi.app/install.sh |
+  MOSHI_HOOK_SKIP_FIRST_RUN=1 INSTALL_DIR=/usr/local/bin sh ||
   log "WARNING: moshi-hook install failed (Cloudflare 403?) — rerun 'curl -fsSL https://getmoshi.app/install.sh | sh' later"
 for b in moshi moshi-hook; do
   if ! command -v "$b" >/dev/null 2>&1 && [[ -x /root/.local/bin/$b ]]; then
