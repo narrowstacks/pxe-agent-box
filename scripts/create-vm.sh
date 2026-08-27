@@ -118,7 +118,7 @@ users:
   - name: ${ADMIN_USER}
     gecos: agent-box admin
     groups: [adm, sudo, docker]
-    shell: /bin/bash
+    shell: /usr/bin/zsh
     sudo: ALL=(ALL) NOPASSWD:ALL
     lock_passwd: true
     # Keys must be embedded HERE. This custom user-data replaces everything

@@ -54,7 +54,7 @@ log "apt update + base packages"
 apt-get update -y
 apt-get install -y --no-install-recommends \
   ca-certificates gnupg curl wget unzip jq git gh build-essential tmux \
-  qemu-guest-agent docker.io docker-compose-v2 ufw htop \
+  qemu-guest-agent docker.io docker-compose-v2 ufw htop zsh \
   python3 python3-yaml python3-pip \
   ${DEFAULT_APT_PACKAGES} "${EXTRA_APT_PACKAGES:-}"
 
@@ -300,6 +300,35 @@ log "granting ${ADMIN_USER} docker access + npm cache dir"
 usermod -aG docker "$ADMIN_USER" || true
 sudo -u "$ADMIN_USER" bash -c 'mkdir -p ~/.cache/node-gyp ~/.npm'
 
+log "seeding ${ADMIN_USER}'s .zshrc (PATH, zoxide, history, claude bin)"
+sudo -iu "$ADMIN_USER" bash -s <<'ZSHRC'
+if [[ ! -f "$HOME/.zshrc" ]]; then
+cat > "$HOME/.zshrc" <<'ZRC'
+# agent-box zsh config
+export PATH="$HOME/.local/bin:$PATH"
+
+# history
+HISTFILE="$HOME/.zsh_history"
+HISTSIZE=50000
+SAVEHIST=50000
+setopt share_history hist_ignore_dups hist_reduce_blanks
+
+# sane completion
+autoload -Uz compinit && compinit
+zstyle ':completion:*' matcher-list 'm:{a-z}={A-Za-z}'
+
+# useful opts
+setopt autocd interactivecomments
+
+# zoxide smart-cd
+command -v zoxide >/dev/null 2>&1 && eval "$(zoxide init zsh)"
+
+# node version managers commonly drop shims here; keep it ahead
+[[ -d "$HOME/.local/bin" ]] && export PATH="$HOME/.local/bin:$PATH"
+ZRC
+fi
+ZSHRC
+
 ##### size & performance tuning #####
 
 if ((SWAP_SIZE_GB > 0)) && ! swapon --show=NAME --noheadings | grep -q '^/swapfile$'; then
@@ -339,10 +368,16 @@ printf '[Journal]\nSystemMaxUse=200M\n' >/etc/systemd/journald.conf.d/agent-box.
 log "enabling fstrim.timer (thin-provisioned disks like their TRIMs)"
 systemctl enable --now fstrim.timer
 
-log "configuring zoxide smart-cd hook for bash"
+log "configuring zoxide smart-cd hook (bash + zsh)"
 cat >/etc/profile.d/zoxide.sh <<'EOF'
 # zoxide smart-cd (interactive shells only)
-command -v zoxide >/dev/null 2>&1 && eval "$(zoxide init bash)"
+command -v zoxide >/dev/null 2>&1 || return 0 2>/dev/null || exit 0
+eval "$(zoxide init bash)" 2>/dev/null
+EOF
+# zsh loads profile.d via /etc/zsh/zprofile on Ubuntu; the eval above is bash
+# syntax — give zsh its own hook with correct syntax.
+cat >/etc/profile.d/zoxide.zsh <<'EOF'
+command -v zoxide >/dev/null 2>&1 && eval "$(zoxide init zsh)"
 EOF
 
 ##### network hardening #####
@@ -471,27 +506,29 @@ systemctl daemon-reload
 systemctl enable --now agent-box-apt-status.timer
 
 cat >/etc/profile.d/agent-box-welcome.sh <<'EOF'
-# agent-box welcome banner + interactive first-run setup checklist.
-# Sourced by every login shell (bash -l); keep it fast and quiet-on-fail.
+# agent-box welcome banner + setup checklist.
+# MUST be POSIX sh: /etc/profile sources this for EVERY login shell, and SSH
+# clients probe with `sh -lc` (dash on Ubuntu). No [[, compgen, or process
+# substitution. Non-interactive shells exit immediately.
+case $- in *i*) ;; *) return 0 2>/dev/null || exit 0 ;; esac
 
-# ensure ~/.local/bin (where the claude installer links its binary) is on PATH
+# ensure ~/.local/bin (claude installer's link target) is on PATH
 case ":$PATH:" in
   *":$HOME/.local/bin:"*) ;;
-  *) export PATH="$HOME/.local/bin:$PATH" ;;
+  *) PATH="$HOME/.local/bin:$PATH"; export PATH ;;
 esac
 
-printf '\n\033[1;36m=== agent-box ===\033[0m\n'
+printf '\n\033[1;36m=== agent-box (zsh) ===\033[0m\n'
 printf 'bun %s | node %s | pnpm %s | docker ready\n' \
   "$(bun --version 2>/dev/null)" "$(node --version 2>/dev/null)" "$(pnpm --version 2>/dev/null)"
 printf 'agents: claude / opencode / pi / codex | chrome: google-chrome [--headless=new]\n'
 printf 'headed chrome under virtual display: google-chrome-under-xvfb <url>\n'
 printf 'tsc/tsx/vitest ready | uv + pytest/ruff/black ready | docker ready\n\n'
 
-# One-time account setup checklist. Each line re-checks LIVE state, so the
-# list shrinks as you complete the steps.
+# One-time setup checklist — re-checks live state each login.
 green='\033[0;32m'; yellow='\033[0;33m'; dim='\033[2m'; off='\033[0m'
-row() { # row <done|todo> <label> <command>
-  if [[ "$1" == done ]]; then
+row() {
+  if [ "$1" = done ]; then
     printf " ${green}✔${off} %-14s${dim}done${off}\n" "$2"
   else
     printf " ${yellow}○${off} %-14s run: \033[1m%s\033[0m\n" "$2" "$3"
@@ -508,59 +545,54 @@ if gh auth status >/dev/null 2>&1; then
   row done 'gh' ''; else remaining=$((remaining+1)); row todo 'gh' 'gh auth login'
 fi
 
-if [[ -f "$HOME/.claude/.credentials.json" || -f "$HOME/.claude.json" ]]; then
-  row done claude ''; else remaining=$((remaining+1)); row todo claude '~/.local/bin/claude'
+if [ -f "$HOME/.claude/.credentials.json" ] || [ -f "$HOME/.claude.json" ]; then
+  row done claude ''; else remaining=$((remaining+1)); row todo claude 'claude login'
 fi
 
-if command -v moshi >/dev/null 2>&1 && compgen -G "$HOME/.config/moshi/*" >/dev/null; then
+if command -v moshi >/dev/null 2>&1 && [ -n "$(ls "$HOME"/.config/moshi/* 2>/dev/null)" ]; then
   row done 'moshi-hook' ''; else remaining=$((remaining+1)); row todo 'moshi-hook' 'pair from Moshi on iOS'
 fi
 
-if ((remaining)); then
-  printf " ${dim}%s step%s left before this box is fully yours${off}\n\n" \
-    "$remaining" "$( ((remaining == 1)) || echo s )"
+if [ "$remaining" -gt 0 ]; then
+  plural=""
+  [ "$remaining" -gt 1 ] && plural="s"
+  printf " ${dim}%s step%s left before this box is fully yours${off}\n\n" "$remaining" "$plural"
 else
   printf " ${green}all setup steps complete — happy hacking${off}\n\n"
 fi
 
 # Package freshness — fed by agent-box-apt-status.timer (12h), never scanned
-# at login. Stale data (>48h old) is suppressed rather than shown wrong.
-if [[ -r /var/lib/agent-box/apt-status ]]; then
-  updates=0 security=0 ts=0
+# at login. Stale data (>48h) is suppressed rather than shown wrong.
+if [ -r /var/lib/agent-box/apt-status ]; then
+  updates=0 security=0 npm_outdated=0 pip_outdated=0 bun_outdated=0 bun_cur='' bun_new='' ts=0
   . /var/lib/agent-box/apt-status 2>/dev/null || true
-  if (( $(date +%s) - ts < 172800 )); then
-    if ((security > 0)); then
+  now=$(date +%s)
+  if [ $((now - ts)) -lt 172800 ]; then
+    if [ "$security" -gt 0 ]; then
       printf " ${yellow}%s update%s pending (%s security)${off} — sudo apt update && sudo apt upgrade\n" \
-        "$updates" "$( ((updates == 1)) || echo s )" "$security"
-    elif ((updates > 0)); then
+        "$updates" "$([ "$updates" -eq 1 ] || echo s)" "$security"
+    elif [ "$updates" -gt 0 ]; then
       printf " ${dim}%s update%s pending${off} — sudo apt update && sudo apt upgrade\n" \
-        "$updates" "$( ((updates == 1)) || echo s )"
+        "$updates" "$([ "$updates" -eq 1 ] || echo s)"
     else
       printf " ${green}packages up to date${off}\n"
     fi
-    [[ -e /var/run/reboot-required ]] && printf " ${yellow}reboot required to finish updating${off}\n"
-  fi
-fi
-
-if [[ -r /var/lib/agent-box/apt-status ]]; then
-  npm_outdated=0 pip_outdated=0 bun_cur='' bun_new=''
-  . /var/lib/agent-box/apt-status 2>/dev/null || true
-  if (( $(date +%s) - ts < 172800 )); then
-    if ((npm_outdated > 0)); then
+    if [ "$npm_outdated" -gt 0 ]; then
       printf " ${dim}%s global npm package%s outdated${off} — npm outdated -g; npm i -g <name>@latest\n" \
-        "$npm_outdated" "$( ((npm_outdated == 1)) || echo s )"
+        "$npm_outdated" "$([ "$npm_outdated" -eq 1 ] || echo s)"
     fi
-    if ((pip_outdated > 0)); then
-      printf " ${dim}%s user python package%s outdated${off} — pip3 list --outdated --user; pip3 install --user --break-system-packages -U <name>\n" \
-        "$pip_outdated" "$( ((pip_outdated == 1)) || echo s )"
+    if [ "$pip_outdated" -gt 0 ]; then
+      printf " ${dim}%s user python package%s outdated${off} — pip3 install --user --break-system-packages -U <name>\n" \
+        "$pip_outdated" "$([ "$pip_outdated" -eq 1 ] || echo s)"
     fi
-    if ((bun_outdated > 0)); then
+    if [ "$bun_outdated" -gt 0 ]; then
       printf " ${dim}%s bun package%s outdated${off} — bun pm ls -g; bun update -g\n" \
-        "$bun_outdated" "$( ((bun_outdated == 1)) || echo s )"
+        "$bun_outdated" "$([ "$bun_outdated" -eq 1 ] || echo s)"
     fi
-    if [[ -n "$bun_cur" && -n "$bun_new" && "$bun_cur" != "$bun_new" ]]; then
+    if [ -n "$bun_cur" ] && [ -n "$bun_new" ] && [ "$bun_cur" != "$bun_new" ]; then
       printf " ${dim}bun %s available (%s installed)${off} — bun upgrade\n" "$bun_new" "$bun_cur"
     fi
+    [ -e /var/run/reboot-required ] && printf " ${yellow}reboot required to finish updating${off}\n"
   fi
 fi
 EOF
