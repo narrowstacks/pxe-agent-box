@@ -245,6 +245,47 @@ sudo -iu "$ADMIN_USER" bash -lc 'claude --version' ||
 google-chrome --version
 which xvfb-run || log "WARNING: xvfb missing — headed chrome unavailable"
 
+log "apt status refresh timer (keeps the login banner's update info fresh)"
+cat >/usr/local/bin/agent-box-apt-status <<'EOF'
+#!/usr/bin/env bash
+# Refreshes pending-apt-update counts for the login banner.
+# Invoked by agent-box-apt-status.timer, never at login time.
+set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -qq
+updates=$(apt list --upgradable 2>/dev/null | grep -vc '^Listing' || true)
+security=$(apt-get -s dist-upgrade 2>/dev/null | grep -ci '^Inst .*secur' || true)
+mkdir -p /var/lib/agent-box
+printf 'updates=%s\nsecurity=%s\nts=%s\n' \
+  "$updates" "$security" "$(date +%s)" >/var/lib/agent-box/apt-status
+EOF
+chmod 755 /usr/local/bin/agent-box-apt-status
+cat >/etc/systemd/system/agent-box-apt-status.service <<'EOF'
+[Unit]
+Description=agent-box: refresh apt update counts for login banner
+Wants=network-online.target
+After=network-online.target
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/agent-box-apt-status
+Nice=10
+IOSchedulingClass=idle
+EOF
+cat >/etc/systemd/system/agent-box-apt-status.timer <<'EOF'
+[Unit]
+Description=agent-box: refresh apt counts twice daily
+[Timer]
+OnBootSec=7min
+OnUnitActiveSec=12h
+RandomizedDelaySec=20min
+Persistent=true
+[Install]
+WantedBy=timers.target
+EOF
+systemctl daemon-reload
+/usr/local/bin/agent-box-apt-status >/dev/null 2>&1 || log "WARNING: initial apt-status scan failed"
+systemctl enable --now agent-box-apt-status.timer
+
 cat >/etc/profile.d/agent-box-welcome.sh <<'EOF'
 # agent-box welcome banner + interactive first-run setup checklist.
 # Sourced by every login shell (bash -l); keep it fast and quiet-on-fail.
@@ -296,6 +337,25 @@ if ((remaining)); then
     "$remaining" "$( ((remaining == 1)) || echo s )"
 else
   printf " ${green}all setup steps complete — happy hacking${off}\n\n"
+fi
+
+# Package freshness — fed by agent-box-apt-status.timer (12h), never scanned
+# at login. Stale data (>48h old) is suppressed rather than shown wrong.
+if [[ -r /var/lib/agent-box/apt-status ]]; then
+  updates=0 security=0 ts=0
+  . /var/lib/agent-box/apt-status 2>/dev/null || true
+  if (( $(date +%s) - ts < 172800 )); then
+    if ((security > 0)); then
+      printf " ${yellow}%s update%s pending (%s security)${off} — sudo apt update && sudo apt upgrade\n" \
+        "$updates" "$( ((updates == 1)) || echo s )" "$security"
+    elif ((updates > 0)); then
+      printf " ${dim}%s update%s pending${off} — sudo apt update && sudo apt upgrade\n" \
+        "$updates" "$( ((updates == 1)) || echo s )"
+    else
+      printf " ${green}packages up to date${off}\n"
+    fi
+    [[ -e /var/run/reboot-required ]] && printf " ${yellow}reboot required to finish updating${off}\n"
+  fi
 fi
 EOF
 
