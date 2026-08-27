@@ -1,70 +1,60 @@
-# agent-box configuration
-#
-# Copy to config.sh and edit before running anything. All scripts source this
-# file and are meant to run ON the Proxmox VE host (or wherever qm/pvesm are
-# available).
-#
-# Every variable here is consumed by scripts/*.sh, not in this file.
+# agent-box configuration reference. Copy to config.sh and edit.
+# Every variable here is consumed by devbox.sh and scripts/*.sh.
 # shellcheck shell=bash disable=SC2034
 
 ##### Proxmox infrastructure #####
 
-# Storage where the template's disk lives (and clones inherit from)
-STORAGE="local-lvm"
-
-# Storage that accepts snippet content (where generated cloud-init user-data goes).
-# The built-in "local" directory storage supports snippets out of the box.
-SNIPPET_STORAGE="local"
-
-# Network bridge VMs attach to
+STORAGE="local-lvm"          # pvesm status; must be images-capable
+SNIPPET_STORAGE="local"      # where the cloud-init snippet is written
 BRIDGE="vmbr0"
-# Optional VLAN tag; leave empty for untagged
 NET_VLAN_TAG=""
 
-# ID of the cloud-init template created by build-template.sh
 TEMPLATE_ID="9000"
+VMID="104"
+VMNAME="devbox"
 
-##### Per-VM defaults (overridable via create-vm.sh flags) #####
+##### Box sizing #####
+# NOTE: --balloon 0 is forced by devbox.sh because PVE requires ballooning
+# disabled for virtiofs. Size VM_MEMORY_MB against the host's real RAM;
+# scripts/preflight.sh checks this.
 
-VM_CORES="4"
-VM_MEMORY_MB="8192"   # MiB
-VM_DISK_SIZE_GB="80"  # root disk; expanded post-clone, growpart runs on boot
+VM_CORES="8"
+VM_MEMORY_MB="24576"
+VM_DISK_SIZE_GB="160"
 
-# Set a fixed IP like "10.0.0.42/24" to skip DHCP. Leave empty for DHCP4.
-STATIC_IP=""
-# Only used when STATIC_IP is set
+STATIC_IP=""                 # e.g. "10.0.0.42/24"; empty means DHCP
 GATEWAY=""
-
-# Optional DNS search domain for the guest
 SEARCH_DOMAIN=""
 
-##### Guest OS / account #####
+##### Guest account #####
 
-GUEST_HOSTNAME_PREFIX="agent-box"
-ADMIN_USER="dev"
+ADMIN_USER="dev"             # created at uid 1000; see cloud-init template
 GUEST_TIMEZONE="America/Los_Angeles"
 
-# One or more files with SSH public keys, whitespace separated.
-# IMPORTANT: resolved on the machine where create-vm.sh runs (the PVE host).
-# Use absolute paths to avoid $HOME surprises; copy keys there if needed:
-#   scp ~/.ssh/id_ed25519.pub root@pve:/root/.ssh/
-# Each key gets full sudo + docker access on the box.
-SSH_KEY_FILES="/root/.ssh/id_ed25519.pub"
-# Non-existent entries in the list above are ignored; keep at least one real one.
+# Resolved ON THE PVE HOST. Absolute paths only.
+SSH_KEY_FILES="/root/.ssh/id_ed25519.pub /root/.ssh/id_ed25519_iphone.pub"
 
-##### Provisioning knobs (applied inside the guest) #####
+##### Persistent state volume #####
+# A plain host directory exposed to the guest over virtiofs as /data.
+# It is never referenced by the VM config, so no destroy path can reach it.
 
-NODE_MAJOR="24"        # Node LTS major installed alongside bun (agent CLIs need npm)
-SWAP_SIZE_GB="8"       # 0 disables swapfile creation
-ENABLE_UFW="1"         # 1 = firewall with OpenSSH + mosh UDP inbound (Docker bypasses ufw)
-# Extra apt packages installed on every box. Defaults live in provision.sh
-# (ripgrep fd-find fzf tree ncdu sqlite3 strace lsof rsync less file manpages);
-# set this to ADD more, e.g. "postgresql-client redis-tools ffmpeg"
+DATA_HOST_DIR="/srv/devdata"
+DATA_MAP_ID="devdata"
+
+##### Images and bootstrap #####
+
+CLOUD_IMAGE_URL="https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2"
+
+# Pin to a tag or commit SHA once the box is stable, so an in-flight push
+# to main cannot change what a rebuild installs.
+BOOTSTRAP_URL="https://raw.githubusercontent.com/narrowstacks/pxe-agent-box/main/bootstrap.sh"
+
+##### Guest provisioning knobs #####
+
+# mise owns the user toolchain tree. Toolchains live on the VM disk and are
+# reinstalled from ~/.config/mise on rebuild; only the manifest persists.
+MISE_TOOLS="node@lts python@3.13 bun@latest"
+
+SWAP_SIZE_GB="8"
+ENABLE_UFW="1"
 EXTRA_APT_PACKAGES=""
-
-##### Build-template options #####
-
-# Sourced externally by scripts/build-template.sh
-# shellcheck disable=SC2034
-# Ubuntu 24.04 (noble) generic cloud image
-CLOUD_IMAGE_URL="https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
