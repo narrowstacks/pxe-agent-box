@@ -451,6 +451,12 @@ npm i -g --no-fund --no-audit pnpm@latest || echo "WARNING: pnpm failed" >&2
 # uv owns python packages. Debian 13 marks the system python
 # externally-managed, so 'pip3 --user --break-system-packages' is retired.
 mise exec python -- python -m pip install --quiet --upgrade uv || echo "WARNING: uv failed" >&2
+
+# mise generates shims when IT installs a tool. Anything added afterwards
+# (npm globals, and uv via pip into mise's python) has no shim until we
+# ask for one, and shims are the only thing a non-interactive login shell
+# sees. Without this, a tool is installed and still "not found".
+mise reshim || echo "WARNING: mise reshim failed" >&2
 EOF
 
 ##### 8. shell configuration #####
