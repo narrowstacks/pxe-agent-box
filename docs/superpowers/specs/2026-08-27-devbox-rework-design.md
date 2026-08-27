@@ -287,10 +287,10 @@ reference. Added: `VMID`, `VMNAME`, `DATA_HOST_DIR`, `DATA_MAP_ID`,
 `BOOTSTRAP_URL`, `MISE_TOOLS`. Removed: `NODE_MAJOR`, `NPM_GLOBALS`,
 `PIP_PACKAGES`, `GUEST_HOSTNAME_PREFIX`. `CLOUD_IMAGE_URL` points at trixie.
 
-`VM_CORES`, `VM_MEMORY_MB`, and `VM_DISK_SIZE_GB` default to 8, 24576, and 160
-respectively, carried from the `new-paradigm` draft. Implementation must check
-charon's total RAM before committing to 24 GB, since three other VMs are
-already running there.
+`VM_CORES`, `VM_MEMORY_MB`, and `VM_DISK_SIZE_GB` default to 8, 16384, and 160.
+Measured during implementation: charon has 32017 MiB total with 12290 MiB
+committed to VMs 206 and 800, so the draft's 24576 would have overcommitted the
+host by about 4.8 GB. 16384 leaves roughly 3.3 GB for the PVE host itself.
 
 ## 6. Repository layout
 
@@ -375,7 +375,10 @@ the repo, run locally before anything is pushed.
   fall back to the bookworm suite with a comment, or to `docker.io` from
   Debian.
 - **Tailscale's trixie repo path** likewise.
-- **charon's total RAM** against a 24 GB allocation alongside VMs 206 and 800.
+- ~~**charon's total RAM** against a 24 GB allocation.~~ RESOLVED during
+  implementation: charon has 32017 MiB with 12290 MiB committed to VMs 206
+  and 800. The 24576 default overcommitted by ~4.8 GB, so the default is now
+  16384.
 - **Bootstrap fetched from `main`** means a mid-edit push changes what a
   rebuild installs. Mitigated by the local copy at
   `/usr/local/sbin/devbox-bootstrap` and by `BOOTSTRAP_URL` accepting a tag or

@@ -98,8 +98,13 @@ done
 if command -v shellcheck >/dev/null 2>&1; then
   # config.sh files are sourced, not executed; tell shellcheck so.
   shellcheck -S warning "${files[@]}" || fail=1
+elif [[ "${LINT_ALLOW_NO_SHELLCHECK:-0}" == "1" ]]; then
+  echo "WARNING: shellcheck not installed, skipping (LINT_ALLOW_NO_SHELLCHECK=1)" >&2
 else
-  echo "WARNING: shellcheck not installed (brew install shellcheck)" >&2
+  # Every later task reports against this gate. A gate that announces
+  # success when its main check never ran is worse than no gate.
+  echo "ERROR: shellcheck not installed. Run 'brew install shellcheck', or set LINT_ALLOW_NO_SHELLCHECK=1 to skip." >&2
+  fail=1
 fi
 
 # Every file destined for /etc/profile.d must parse under dash, because
@@ -144,11 +149,12 @@ VMNAME="devbox"
 
 ##### Box sizing #####
 # NOTE: --balloon 0 is forced by devbox.sh because PVE requires ballooning
-# disabled for virtiofs. Size VM_MEMORY_MB against the host's real RAM;
-# scripts/preflight.sh checks this.
+# disabled for virtiofs. Size VM_MEMORY_MB against the host's real RAM:
+# charon has 32 GB with ~12 GB committed to other VMs, so 16 GB fits and
+# 24 GB does not. scripts/preflight.sh checks this before every create.
 
 VM_CORES="8"
-VM_MEMORY_MB="24576"
+VM_MEMORY_MB="16384"
 VM_DISK_SIZE_GB="160"
 
 STATIC_IP=""                 # e.g. "10.0.0.42/24"; empty means DHCP
