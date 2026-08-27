@@ -118,11 +118,11 @@ remote 'test -L ~/.zshrc && readlink -f ~/.zshrc | grep -q "^/data/"'
 # shellcheck disable=SC2088  # description text, not an executed path
 check "~/.zshrc persists on /data" $?
 
-# Moved here from Task 10: these need the login-shell PATH that ~/.zshrc
-# creates via 'mise activate', so they cannot pass until this task lands.
-# Do NOT weaken them to a bare 'command -v' or a direct path: agents and
-# Moshi invoke these from login shells, and a tool that only works by
-# absolute path is a tool that does not work.
+# Moved here from Task 10: these need the login-shell PATH that
+# /etc/profile.d/15-devbox-mise-shims.sh creates, so they cannot pass until
+# this task lands. Do NOT weaken them to a bare 'command -v' or a direct
+# path: agents and Moshi invoke these from login shells, and a tool that
+# only works by absolute path is a tool that does not work.
 printf '\n\033[1;34m== user tree (mise) ==\033[0m\n'
 
 for b in mise node npm bun pnpm python uv opencode codex pi tsx prettier eslint vitest; do
@@ -135,6 +135,26 @@ check "opencode is owned by the admin user" $?
 
 remote 'zsh -lc "opencode --version" >/dev/null 2>&1'
 check "opencode runs (needs avx2 from x86-64-v3)" $?
+
+# Issue #2 in the incident ledger, verbatim: "Non-interactive shells have a
+# short PATH. Scripts, scp, and remote commands never source ~/.zshrc, so
+# user-local bins are invisible." The zsh -lc checks above only prove the
+# zsh path; agents, scripts, scp and remote-exec actually use bash or plain
+# non-interactive shells, so those are the invocation styles that matter.
+printf '\n\033[1;34m== non-interactive PATH (all shells) ==\033[0m\n'
+
+for b in node bun opencode mise; do
+  remote "bash -lc 'command -v $b' >/dev/null 2>&1"
+  check "$b is on the login PATH under bash" $?
+  remote "sh -lc 'command -v $b' >/dev/null 2>&1"
+  check "$b is on the login PATH under dash/sh" $?
+done
+
+# The one case /etc/profile.d cannot reach: plain 'ssh host cmd' is
+# non-interactive AND non-login, so no profile.d file runs. ~/.zshenv fixes
+# this because zsh sources it unconditionally, for every invocation.
+remote 'command -v node >/dev/null'
+check "node resolves for a plain non-interactive ssh command" $?
 
 printf '\n\033[1;34m== %d passed, %d failed ==\033[0m\n' "$pass" "$fail"
 [[ $fail -eq 0 ]]
