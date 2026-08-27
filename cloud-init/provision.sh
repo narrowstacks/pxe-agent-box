@@ -499,7 +499,7 @@ if [[ -f "$HOME/.claude/.credentials.json" || -f "$HOME/.claude.json" ]]; then
   row done claude ''; else remaining=$((remaining+1)); row todo claude '~/.local/bin/claude'
 fi
 
-if command -v moshi >/dev/null 2>&1 && compgen -G "$HOME/.moshi*" >/dev/null; then
+if command -v moshi >/dev/null 2>&1 && compgen -G "$HOME/.config/moshi/*" >/dev/null; then
   row done 'moshi-hook' ''; else remaining=$((remaining+1)); row todo 'moshi-hook' 'pair from Moshi on iOS'
 fi
 
