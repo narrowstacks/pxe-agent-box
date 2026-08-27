@@ -14,12 +14,16 @@ REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 
 VM_NAME="agent-box"
 VM_ID=""
+VM_DISK_SIZE="" # override VM_DISK_SIZE_GB from config.sh when set
 START_AFTER_CREATE=1
 
-while getopts "n:i:h" opt; do
-  case "$opt" in
+while getopts "n:i:c:m:d:h" opt; do
+case "$opt" in
   n) VM_NAME="$OPTARG" ;;
   i) VM_ID="$OPTARG" ;;
+  c) OPT_CORES="$OPTARG" ;;
+  m) OPT_MEMORY_MB="$OPTARG" ;;
+  d) VM_DISK_SIZE="$OPTARG" ;;
   h)
     grep '^#' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
     exit 0
@@ -37,6 +41,10 @@ done
 
 # shellcheck source=/dev/null disable=SC1091
 source "$REPO_ROOT/config.sh"
+
+# CLI flags win over config.sh (parsed before the source above, applied after)
+VM_CORES="${OPT_CORES:-$VM_CORES}"
+VM_MEMORY_MB="${OPT_MEMORY_MB:-$VM_MEMORY_MB}"
 
 log() { printf '\033[1;32m[create]\033[0m %s\n' "$*"; }
 fail() {
@@ -151,9 +159,10 @@ rm -f "$env_content"
 log "cloning template ${TEMPLATE_ID} -> VM ${VM_ID} (${VM_NAME}), full clone"
 qm clone "$TEMPLATE_ID" "$VM_ID" --name "$VM_NAME" --full 1
 
-log "applying sizing: ${VM_CORES} cores / ${VM_MEMORY_MB}MiB / ${VM_DISK_SIZE_GB}G disk"
+DISK_GB="${VM_DISK_SIZE:-$VM_DISK_SIZE_GB}"
+log "applying sizing: ${VM_CORES} cores / ${VM_MEMORY_MB}MiB / ${DISK_GB}G disk"
 qm set "$VM_ID" --cores "$VM_CORES" --memory "$VM_MEMORY_MB" --balloon 2048
-qm resize "$VM_ID" scsi0 --size "${VM_DISK_SIZE_GB}G"
+qm resize "$VM_ID" scsi0 --size "${DISK_GB}G"
 qm set "$VM_ID" --cicustom "user=${SNIPPET_STORAGE}:snippets/${SNIPPET_NAME}"
 
 if [[ -n "$SEARCH_DOMAIN" ]]; then
