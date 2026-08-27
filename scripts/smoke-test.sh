@@ -101,5 +101,40 @@ for b in starship herdr moshi moshi-hook; do
   check "$b does not resolve into /root" $?
 done
 
+printf '\n\033[1;34m== shell configuration ==\033[0m\n'
+
+remote 'grep -q "^# devbox-managed zshrc" ~/.zshrc'
+# shellcheck disable=SC2088  # description text, not an executed path
+check "~/.zshrc carries the managed marker" $?
+
+remote '! grep -qE "promptinit|prompt adam1" ~/.zshrc'
+# shellcheck disable=SC2088  # description text, not an executed path
+check "~/.zshrc registers no competing prompt" $?
+
+remote 'zsh -ic "echo \$PROMPT" 2>/dev/null | grep -qv adam'
+check "starship is the active prompt" $?
+
+remote 'test -L ~/.zshrc && readlink -f ~/.zshrc | grep -q "^/data/"'
+# shellcheck disable=SC2088  # description text, not an executed path
+check "~/.zshrc persists on /data" $?
+
+# Moved here from Task 10: these need the login-shell PATH that ~/.zshrc
+# creates via 'mise activate', so they cannot pass until this task lands.
+# Do NOT weaken them to a bare 'command -v' or a direct path: agents and
+# Moshi invoke these from login shells, and a tool that only works by
+# absolute path is a tool that does not work.
+printf '\n\033[1;34m== user tree (mise) ==\033[0m\n'
+
+for b in mise node npm bun pnpm python uv opencode codex pi tsx prettier eslint vitest; do
+  remote "zsh -lc 'command -v $b' >/dev/null 2>&1"
+  check "$b is on the admin user's login PATH" $?
+done
+
+remote 'test -O "$(zsh -lc "command -v opencode" 2>/dev/null)"'
+check "opencode is owned by the admin user" $?
+
+remote 'zsh -lc "opencode --version" >/dev/null 2>&1'
+check "opencode runs (needs avx2 from x86-64-v3)" $?
+
 printf '\n\033[1;34m== %d passed, %d failed ==\033[0m\n' "$pass" "$fail"
 [[ $fail -eq 0 ]]
