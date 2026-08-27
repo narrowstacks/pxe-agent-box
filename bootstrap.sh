@@ -386,3 +386,69 @@ if ! command -v moshi-hook >/dev/null 2>&1; then
     fi
   done
 fi
+
+##### 7. user tree: mise #####
+#
+# Rule 1, user half: tools that self-update in place are owned by the user
+# who updates them. mise is the single mechanism for node, python and bun,
+# and mise-managed npm globals carry opencode, pi and codex.
+#
+# Toolchains install under ~/.local/share/mise, on the VM DISK. Only
+# ~/.config/mise (the manifest) persists on /data. Toolchains are large, hot,
+# and reproducible from the manifest, so keeping them local avoids executing
+# node off virtiofs on every invocation and keeps /data small.
+
+MISE_TOOLS="${MISE_TOOLS:-node@lts python@3.13 bun@latest}"
+
+log "mise"
+# Multi-line as the dev user goes through STDIN. 'sudo -i' with multi-line
+# arguments joins them on spaces and re-parses, destroying the quoting.
+as_user <<'EOF'
+set -euo pipefail
+export PATH="$HOME/.local/bin:$PATH"
+if [[ ! -x "$HOME/.local/bin/mise" ]]; then
+  curl -fsSL https://mise.run | sh
+fi
+EOF
+
+log "mise toolchains: ${MISE_TOOLS}"
+as_user <<EOF
+set -euo pipefail
+export PATH="\$HOME/.local/bin:\$PATH"
+mise use -g ${MISE_TOOLS}
+mise install
+EOF
+
+log "user-tree CLIs"
+as_user <<'EOF'
+set -euo pipefail
+export PATH="$HOME/.local/bin:$PATH"
+eval "$(mise activate bash)"
+
+npm i -g --no-fund --no-audit typescript tsx prettier eslint vitest || echo "WARNING: npm globals partially failed" >&2
+
+# The 'opencode' meta-package misresolves its platform deps and demands a
+# musl build on glibc (EBADPLATFORM), reproducibly, even with --force.
+# Install the platform-scoped package directly. Platform-scoped npm packages
+# do not create bin links, so link it by hand INSIDE the user tree. This is
+# not a cross-tree hop: both ends are owned by the same user.
+npm i -g --no-fund --no-audit opencode-linux-x64 || echo "WARNING: opencode failed" >&2
+prefix="$(npm prefix -g)"
+if [[ -f "$prefix/lib/node_modules/opencode-linux-x64/bin/opencode" ]]; then
+  ln -sf "$prefix/lib/node_modules/opencode-linux-x64/bin/opencode" "$prefix/bin/opencode"
+fi
+
+npm i -g --no-fund --no-audit @openai/codex || echo "WARNING: codex failed" >&2
+
+# pi's own docs specify --ignore-scripts: it needs no lifecycle scripts for a
+# normal install, and bun/npm block them by default anyway.
+npm i -g --no-fund --no-audit --ignore-scripts @earendil-works/pi-coding-agent \
+  || echo "WARNING: pi failed" >&2
+
+# pnpm as the documented fallback package manager. bun comes from mise.
+npm i -g --no-fund --no-audit pnpm@latest || echo "WARNING: pnpm failed" >&2
+
+# uv owns python packages. Debian 13 marks the system python
+# externally-managed, so 'pip3 --user --break-system-packages' is retired.
+mise exec python -- python -m pip install --quiet --upgrade uv || echo "WARNING: uv failed" >&2
+EOF
