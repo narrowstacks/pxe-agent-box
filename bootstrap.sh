@@ -243,3 +243,146 @@ if [[ "$ENABLE_UFW" == "1" ]]; then
 fi
 
 log "core chain complete"
+
+##### 5. root-tree tools: apt repositories #####
+#
+# Rule 1, root half: tools the PROVISIONER updates live in apt or directly in
+# /usr/local/bin, owned by root, exactly like distro packages. Nothing here
+# is ever symlinked into a user tree. The previous setup installed several of
+# these into /root/.local/bin (a mode-0700 home) and symlinked them into
+# /usr/local/bin, so 'dev' could not traverse the path and the "global"
+# binaries were invisible to the only user who ran them.
+
+CODENAME="$(. /etc/os-release && echo "$VERSION_CODENAME")"
+
+add_repo() {  # add_repo <name> <key-url> <repo-line>
+  install -d -m 0755 /etc/apt/keyrings
+  curl -fsSL "$2" -o "/etc/apt/keyrings/$1.asc"
+  chmod a+r "/etc/apt/keyrings/$1.asc"
+  echo "$3" >"/etc/apt/sources.list.d/$1.list"
+}
+
+if ! command -v docker >/dev/null 2>&1; then
+  log "docker"
+  add_repo docker https://download.docker.com/linux/debian/gpg \
+    "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian ${CODENAME} stable"
+  apt-get update -qq
+  apt-get install -y docker-ce docker-ce-cli containerd.io \
+    docker-buildx-plugin docker-compose-plugin
+fi
+usermod -aG docker "$DEV_USER"
+# Membership in the docker group is effectively root on this guest. Accepted:
+# the VM itself is the security boundary. Switch to rootless if you disagree.
+
+if ! command -v tailscale >/dev/null 2>&1; then
+  log "tailscale"
+  curl -fsSL "https://pkgs.tailscale.com/stable/debian/${CODENAME}.noarmor.gpg" \
+    -o /usr/share/keyrings/tailscale-archive-keyring.gpg
+  curl -fsSL "https://pkgs.tailscale.com/stable/debian/${CODENAME}.tailscale-keyring.list" \
+    -o /etc/apt/sources.list.d/tailscale.list
+  apt-get update -qq
+  apt-get install -y tailscale
+  systemctl enable --now tailscaled
+fi
+# No 'tailscale up' here and no auth key anywhere. TS_STATE_DIR points at
+# /data, so after the one manual 'sudo tailscale up' the identity survives
+# every rebuild and the box keeps its MagicDNS name.
+
+if ! command -v gh >/dev/null 2>&1; then
+  log "gh"
+  add_repo githubcli https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+    "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli.asc] https://cli.github.com/packages stable main"
+  apt-get update -qq
+  apt-get install -y gh
+fi
+
+if ! command -v claude >/dev/null 2>&1; then
+  log "claude code"
+  install -d -m 0755 /etc/apt/keyrings
+  curl -fsSL https://downloads.claude.ai/keys/claude-code.asc \
+    -o /etc/apt/keyrings/claude-code.asc
+
+  # Never trust a downloaded key without verifying its fingerprint.
+  EXPECTED="31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE"
+  FOUND="$(gpg --show-keys --with-colons /etc/apt/keyrings/claude-code.asc \
+           | awk -F: '/^fpr:/ {print $10; exit}')"
+  [[ "$FOUND" == "$EXPECTED" ]] || fail "claude-code key fingerprint mismatch: expected $EXPECTED, found ${FOUND:-<none>}"
+
+  # The stable channel trails latest by about a week and skips releases with
+  # known major regressions, which is what a box running long unattended
+  # agent loops wants. The native installer busy-looped at 100% CPU with zero
+  # network for 12+ minutes on this headless guest, twice; apt does not.
+  echo "deb [signed-by=/etc/apt/keyrings/claude-code.asc] https://downloads.claude.ai/claude-code/apt/stable stable main" \
+    >/etc/apt/sources.list.d/claude-code.list
+  apt-get update -qq
+  apt-get install -y claude-code
+fi
+
+if ! command -v google-chrome >/dev/null 2>&1; then
+  log "chrome"
+  # The apt repo rather than the direct .deb the old provisioner fetched, so
+  # Chrome upgrades ride normal 'apt upgrade' instead of going stale.
+  if add_repo google-chrome https://dl.google.com/linux/linux_signing_key.pub \
+       "deb [arch=amd64 signed-by=/etc/apt/keyrings/google-chrome.asc] https://dl.google.com/linux/chrome/deb/ stable main" \
+     && apt-get update -qq && apt-get install -y google-chrome-stable; then
+    :
+  else
+    warn "chrome install failed; fallback is the direct .deb at https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb"
+  fi
+fi
+
+# Headed Chrome inside a virtual framebuffer, for the things that refuse
+# --headless=new.
+cat >/usr/local/bin/google-chrome-under-xvfb <<'EOF'
+#!/bin/sh
+exec xvfb-run -a -s "-screen 0 1920x1080x24" google-chrome --no-sandbox "$@"
+EOF
+chmod 0755 /usr/local/bin/google-chrome-under-xvfb
+
+##### 6. root-tree tools: direct installers #####
+#
+# No distro package exists for these. Because bootstrap runs as root,
+# /usr/local/bin is writable and no installer needs to escalate or prompt.
+# Each workaround below names the upstream bug it exists for.
+
+if ! command -v starship >/dev/null 2>&1; then
+  log "starship"
+  # --yes because the installer prompts interactively, and its stdin IS the
+  # piped script, so a prompt breaks the pipe. -b to target /usr/local/bin
+  # directly rather than installing to a home and copying afterward.
+  optional "starship" sh -c \
+    'curl -fsSL https://starship.rs/install.sh | sh -s -- --yes -b /usr/local/bin >/dev/null'
+fi
+
+if ! command -v herdr >/dev/null 2>&1; then
+  log "herdr"
+  # HOME is set under cloud-init runcmd but NOT on qemu-ga exec paths, and
+  # herdr's installer dies on "HOME: parameter not set" without it.
+  export HOME="${HOME:-/root}"
+  # HERDR_INSTALL_DIR must ride the SH side of the pipe. An env prefix on the
+  # curl side never reaches the installer.
+  curl -fsSL https://herdr.dev/install.sh | HERDR_INSTALL_DIR=/usr/local/bin sh >/dev/null \
+    || warn "herdr install failed"
+  if ! command -v herdr >/dev/null 2>&1 && [[ -x /root/.local/bin/herdr ]]; then
+    install -m 0755 /root/.local/bin/herdr /usr/local/bin/herdr
+  fi
+fi
+
+if ! command -v moshi-hook >/dev/null 2>&1; then
+  log "moshi-hook"
+  # THE ONE DOCUMENTED CROSS-TREE EXCEPTION. The installer ignores INSTALL_DIR
+  # when the variable prefixes the CURL side of the pipe and lands in
+  # ~root/.local/bin regardless, so pass the env to the SH side and copy
+  # afterward. Copies, not symlinks: /root is mode 0700 and dev cannot
+  # traverse it, which is how "global" binaries became invisible before.
+  # Non-fatal: cdn.getmoshi.app sits behind Cloudflare and curl gets 403'd on
+  # some networks. Installs TWO binaries, moshi and moshi-hook.
+  curl -fsSL https://getmoshi.app/install.sh \
+    | MOSHI_HOOK_SKIP_FIRST_RUN=1 INSTALL_DIR=/usr/local/bin sh \
+    || warn "moshi-hook install failed (Cloudflare 403?); rerun 'curl -fsSL https://getmoshi.app/install.sh | sh' later"
+  for b in moshi moshi-hook; do
+    if ! command -v "$b" >/dev/null 2>&1 && [[ -x "/root/.local/bin/$b" ]]; then
+      install -m 0755 "/root/.local/bin/$b" "/usr/local/bin/$b"
+    fi
+  done
+fi

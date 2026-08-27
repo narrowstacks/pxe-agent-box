@@ -82,5 +82,24 @@ for p in .claude .claude.json .config/gh .config/herdr .config/mise .gitconfig; 
   check "$p is a symlink into /data" $?
 done
 
+printf '\n\033[1;34m== root-tree tools ==\033[0m\n'
+
+for b in docker gh claude google-chrome starship herdr moshi moshi-hook tailscale mosh rg fd bat jq; do
+  remote "command -v $b >/dev/null"
+  check "$b is on the non-interactive PATH" $?
+done
+
+remote 'docker info >/dev/null 2>&1'
+check "docker daemon is reachable by the admin user" $?
+
+remote 'id -nG | tr " " "\n" | grep -qx docker'
+check "admin user is in the docker group" $?
+
+# Every root-tree binary must be readable by dev without traversing /root.
+for b in starship herdr moshi moshi-hook; do
+  remote "test -x \"\$(command -v $b)\" && ! readlink -f \"\$(command -v $b)\" | grep -q '^/root/'"
+  check "$b does not resolve into /root" $?
+done
+
 printf '\n\033[1;34m== %d passed, %d failed ==\033[0m\n' "$pass" "$fail"
 [[ $fail -eq 0 ]]
