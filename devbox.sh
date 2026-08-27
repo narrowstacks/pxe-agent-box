@@ -338,7 +338,14 @@ cmd_create() {
 assert_work_tree_clean() {
   log "checking ~/work for unsaved state"
 
-  local check_script="${DATA_HOST_DIR}/.devbox-workcheck.sh"
+  # The filename MUST be unique per invocation. The virtiofs mount is
+  # cache=always, which caches file CONTENT by name and does not revalidate
+  # on overwrite: writing a second script to the same path and guest-exec'ing
+  # it can return the guest's cached copy of the FIRST script's output. A
+  # fixed name here is not simplification, it is a reintroduced staleness
+  # bug. Do not "clean this up" back to a static filename.
+  local check_script
+  check_script="${DATA_HOST_DIR}/.devbox-workcheck.$$.$(date -u +%s).sh"
   {
     printf 'work="/home/%s/work"\n' "$ADMIN_USER"
     cat <<'EOF'
@@ -376,7 +383,7 @@ EOF
   # which would make the gate report failures that are not real.
   local raw rc
   raw="$(qm guest exec "$VMID" --timeout 60 -- /bin/sh -c \
-    "su -s /bin/bash - '${ADMIN_USER}' -c 'bash /data/.devbox-workcheck.sh'" </dev/null 2>/dev/null)" && rc=0 || rc=$?
+    "su -s /bin/bash - '${ADMIN_USER}' -c 'bash /data/$(basename "$check_script")'" </dev/null 2>/dev/null)" && rc=0 || rc=$?
   rm -f "$check_script"
 
   [[ $rc -eq 0 ]] || fail "cannot reach the guest agent to check ~/work; pass --force to rebuild anyway"
@@ -414,7 +421,13 @@ snapshot_work() {
   # Belt and braces behind the gate, not the primary mechanism. Excludes the
   # regenerable directories so the tarball stays small. Written straight to
   # /data by the guest itself, no host-guest transfer needed.
-  local snap_script="${DATA_HOST_DIR}/.devbox-snapshot.sh"
+  #
+  # The filename MUST be unique per invocation, same reason as
+  # assert_work_tree_clean's check_script: cache=always means the guest can
+  # serve a stale cached copy of a path it has seen before. Do not go back
+  # to a static filename.
+  local snap_script
+  snap_script="${DATA_HOST_DIR}/.devbox-snapshot.$$.$(date -u +%s).sh"
   cat > "$snap_script" <<EOF
 tar -C "/home/${ADMIN_USER}" --exclude=node_modules --exclude=.venv --exclude=target --exclude=dist -cf - work | zstd -q -T0 -o "/data/work-snapshots/${stamp}.tar.zst"
 EOF
@@ -422,7 +435,7 @@ EOF
   # Runs as root (guest exec's default): tar/zstd do not care about
   # ownership the way git does, so no su is needed here.
   local raw rc
-  raw="$(qm guest exec "$VMID" --timeout 120 -- /bin/sh -c "bash /data/.devbox-snapshot.sh" </dev/null 2>/dev/null)" && rc=0 || rc=$?
+  raw="$(qm guest exec "$VMID" --timeout 120 -- /bin/sh -c "bash /data/$(basename "$snap_script")" </dev/null 2>/dev/null)" && rc=0 || rc=$?
   rm -f "$snap_script"
 
   if [[ $rc -eq 0 ]] && printf '%s' "$raw" | python3 -c 'import json, sys
@@ -433,12 +446,29 @@ sys.exit(0 if d.get("exited") == 1 and d.get("exitcode", 1) == 0 else 1)' 2>/dev
     warn "work snapshot failed; continuing because the clean-tree gate already passed"
   fi
 
-  # Keep the last three.
-  local old
+  # Keep the last three. 'local old=()' plus a bare "${old[@]}" (no ':-')
+  # is deliberate. The previous form synthesized an empty element from
+  # "${old[@]:-}" when the array was empty (the common case, and the case
+  # on every rebuild until a fourth snapshot exists), so the loop body ran
+  # once with old_file="". "[[ -n '' ]] && rm -f ..." was then the LAST
+  # statement in the function; the '&&' short-circuits on false, so the
+  # loop, and therefore the function, returned 1. Under set -e that killed
+  # the whole rebuild silently before it ever reached the confirmation
+  # prompt, with no message. An empty array under set -u already expands
+  # to zero words on bash 4.4+ (verified on 5.2 and 5.3), so ':-' was
+  # never needed and only introduced the bug.
+  local old=()
   mapfile -t old < <(ls -1t "${DATA_HOST_DIR}/work-snapshots"/*.tar.zst 2>/dev/null | tail -n +4)
-  for old_file in "${old[@]:-}"; do
-    [[ -n "$old_file" ]] && rm -f "$old_file"
+  for old_file in "${old[@]}"; do
+    rm -f "$old_file"
   done
+
+  # Explicit, not incidental: this function is belt-and-braces behind the
+  # clean-tree gate, which has already passed by the time we get here. A
+  # failed snapshot is warned about above and must never abort the rebuild,
+  # so the function's exit status must not depend on what the last
+  # statement above happens to return.
+  return 0
 }
 
 cmd_rebuild() {
