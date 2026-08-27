@@ -308,7 +308,7 @@ log "granting ${ADMIN_USER} docker access + npm cache dir"
 usermod -aG docker "$ADMIN_USER" || true
 sudo -u "$ADMIN_USER" bash -c 'mkdir -p ~/.cache/node-gyp ~/.npm'
 
-log "seeding ${ADMIN_USER}'s .zshrc (PATH, zoxide, history, claude bin)"
+log "seeding ${ADMIN_USER}'s .zshrc (PATH, zoxide, history, starship)"
 sudo -iu "$ADMIN_USER" bash -s <<'ZSHRC'
 if [[ ! -f "$HOME/.zshrc" ]]; then
 cat > "$HOME/.zshrc" <<'ZRC'
@@ -340,6 +340,11 @@ command -v starship >/dev/null 2>&1 && eval "$(starship init zsh)"
 # reload zsh config in-place (exec replaces the shell, so env/aliases/prompts rebuild cleanly)
 reload() { exec zsh; }
 ZRC
+else
+  # herdr (or another tool) owns this .zshrc — just make sure ~/.local/bin is on PATH
+  # so user-local binaries (starship, claude) resolve in every pane.
+  grep -q '.local/bin' "$HOME/.zshrc" || \
+    sed -i '1i # agent-box: user-local bins\nexport PATH="$HOME/.local/bin:$PATH"' "$HOME/.zshrc"
 fi
 ZSHRC
 
