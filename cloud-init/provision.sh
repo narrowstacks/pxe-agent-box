@@ -91,9 +91,9 @@ log "installing Claude Code from Anthropic's apt repo, stable channel (per code.
 # BEFORE registering the repo; skip cleanly rather than trust an unverified key.
 mkdir -p /etc/apt/keyrings
 if curl -fsSL https://downloads.claude.ai/keys/claude-code.asc \
-     -o /etc/apt/keyrings/claude-code.asc &&
-   gpg --show-keys /etc/apt/keyrings/claude-code.asc 2>/dev/null | tr -d ' ' |
-   grep -q 31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE; then
+  -o /etc/apt/keyrings/claude-code.asc &&
+  gpg --show-keys /etc/apt/keyrings/claude-code.asc 2>/dev/null | tr -d ' ' |
+  grep -q 31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE; then
   # stable channel (~1 wk behind latest, skips regressed releases); upgrade via
   # 'apt upgrade claude-code' — our banner's apt-update counter sees these.
   echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/claude-code.asc] https://downloads.claude.ai/claude-code/apt/stable stable main" \
@@ -134,9 +134,12 @@ log "installing bun system-wide"
 curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local FORCE_INSTALL=1 bash >/dev/null
 
 log "installing herdr (agent runtime / terminal multiplexer)"
-# herdr.dev official installer over TLS
+# herdr.dev official installer over TLS. HOME must be exported: under
+# cloud-init runcmd it is set, but qemu-ga exec paths run without it and the
+# installer dies on "HOME: parameter not set".
 # nosemgrep: bash.curl.security.curl-pipe-bash.curl-pipe-bash
-curl -fsSL https://herdr.dev/install.sh | sh
+export HOME="${HOME:-/root}"
+curl -fsSL https://herdr.dev/install.sh | sh >/dev/null
 # installers often land in ~root/.local/bin — expose system-wide
 if ! command -v herdr >/dev/null 2>&1 && [[ -x /root/.local/bin/herdr ]]; then
   ln -sf /root/.local/bin/herdr /usr/local/bin/herdr
@@ -151,6 +154,13 @@ log "installing moshi-hook (companion daemon for the Moshi iOS terminal)"
 MOSHI_HOOK_SKIP_FIRST_RUN=1 INSTALL_DIR=/usr/local/bin \
   curl -fsSL https://getmoshi.app/install.sh | sh ||
   log "WARNING: moshi-hook install failed (Cloudflare 403?) — rerun 'curl -fsSL https://getmoshi.app/install.sh | sh' later"
+# The installer always lands in ~root/.local/bin regardless of INSTALL_DIR
+# (observed v0.3.7) — link both entry points onto the system PATH.
+for b in moshi moshi-hook; do
+  if ! command -v "$b" >/dev/null 2>&1 && [[ -x /root/.local/bin/$b ]]; then
+    ln -sf "/root/.local/bin/$b" "/usr/local/bin/$b"
+  fi
+done
 command -v moshi >/dev/null 2>&1 || log "WARNING: moshi missing"
 
 log "allowing ${ADMIN_USER}'s user daemons (herdr/moshi-hook) to run without an active login session"
@@ -328,7 +338,7 @@ mkdir -p /var/lib/agent-box
   bun_new=""
   [[ -n "$bun_cur" ]] && bun_new=$(curl -fsSL --max-time 20 \
     https://api.github.com/repos/oven-sh/bun/releases/latest |
-    jq -r '.tag_name' 2>/dev/null | sed 's/^bun//' || true)
+    jq -r '.tag_name' 2>/dev/null | sed 's/^bun-v//' || true)
   printf 'bun_cur=%s\nbun_new=%s\n' "$bun_cur" "$bun_new"
 
   printf 'ts=%s\n' "$(date +%s)"
