@@ -2,6 +2,10 @@
 
 Disposable Proxmox dev boxes for agent workflows, one command each.
 
+> **Are you an AI agent?** Skip the human tutorial — read
+> [AGENTS.md](AGENTS.md) for a setup walkthrough built for you (questions to
+> ask, gotchas to check, exact commands to run).
+
 You build **one template** on your Proxmox host. After that, every new dev box
 is a single command — fully provisioned, your SSH keys already in it, ready in
 a few minutes. Throw boxes away freely; making a fresh one costs nothing.
