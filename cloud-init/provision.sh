@@ -77,8 +77,10 @@ log "installing uv (fast python package manager) + common python packages"
 # astral.sh official installer over TLS
 # nosemgrep: bash.curl.security.curl-pipe-bash.curl-pipe-bash
 curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null
-ln -sf /root/.local/bin/uv /usr/local/bin/uv
-ln -sf /root/.local/bin/uvx /usr/local/bin/uvx
+# install (copy), not symlink: the originals live under /root which is 0700 —
+# symlinks would be invisible to the admin user the agents actually run as.
+install -m 755 /root/.local/bin/uv /usr/local/bin/uv
+install -m 755 /root/.local/bin/uvx /usr/local/bin/uvx
 # shellcheck disable=SC2086  # word splitting intended
 # --ignore-installed: some distro-python packages (e.g. typing_extensions) ship
 # without RECORD metadata; plain --break-system-packages would try to uninstall
@@ -139,10 +141,12 @@ log "installing herdr (agent runtime / terminal multiplexer)"
 # installer dies on "HOME: parameter not set".
 # nosemgrep: bash.curl.security.curl-pipe-bash.curl-pipe-bash
 export HOME="${HOME:-/root}"
-curl -fsSL https://herdr.dev/install.sh | sh >/dev/null
-# installers often land in ~root/.local/bin — expose system-wide
+# HERDR_INSTALL_DIR must ride the sh side of the pipe (env prefixes on curl
+# don't reach the installer).
+curl -fsSL https://herdr.dev/install.sh | HERDR_INSTALL_DIR=/usr/local/bin sh >/dev/null
+# fallback copy if the installer ignored the dir
 if ! command -v herdr >/dev/null 2>&1 && [[ -x /root/.local/bin/herdr ]]; then
-  ln -sf /root/.local/bin/herdr /usr/local/bin/herdr
+  install -m 755 /root/.local/bin/herdr /usr/local/bin/herdr
 fi
 
 log "installing moshi-hook (companion daemon for the Moshi iOS terminal)"
@@ -151,14 +155,15 @@ log "installing moshi-hook (companion daemon for the Moshi iOS terminal)"
 # every user. Non-fatal: cdn.getmoshi.app sits behind Cloudflare and curl gets
 # 403'd on some networks — a failed download must not abort provisioning.
 # nosemgrep: bash.curl.security.curl-pipe-bash.curl-pipe-bash
-MOSHI_HOOK_SKIP_FIRST_RUN=1 INSTALL_DIR=/usr/local/bin \
-  curl -fsSL https://getmoshi.app/install.sh | sh ||
+# Installer ignores INSTALL_DIR env passed to curl (never reaches sh) and
+# lands in ~root/.local/bin regardless — pass env to sh, then copy binaries
+# onto the system PATH (copies, not symlinks: /root is 0700).
+curl -fsSL https://getmoshi.app/install.sh \
+  | MOSHI_HOOK_SKIP_FIRST_RUN=1 INSTALL_DIR=/usr/local/bin sh ||
   log "WARNING: moshi-hook install failed (Cloudflare 403?) — rerun 'curl -fsSL https://getmoshi.app/install.sh | sh' later"
-# The installer always lands in ~root/.local/bin regardless of INSTALL_DIR
-# (observed v0.3.7) — link both entry points onto the system PATH.
 for b in moshi moshi-hook; do
   if ! command -v "$b" >/dev/null 2>&1 && [[ -x /root/.local/bin/$b ]]; then
-    ln -sf "/root/.local/bin/$b" "/usr/local/bin/$b"
+    install -m 755 "/root/.local/bin/$b" "/usr/local/bin/$b"
   fi
 done
 command -v moshi >/dev/null 2>&1 || log "WARNING: moshi missing"
@@ -168,7 +173,9 @@ loginctl enable-linger "$ADMIN_USER" 2>/dev/null || true
 
 if command -v herdr >/dev/null 2>&1; then
   log "seeding herdr config for ${ADMIN_USER} (catppuccin theme + agent sidebar)"
-  sudo -iu "$ADMIN_USER" bash -lc '
+  # stdin, not bash -lc: sudo -i joins its args with spaces and re-parses
+  # them through the login shell, destroying quoting and newlines.
+  sudo -iu "$ADMIN_USER" bash -s <<'SEED'
     conf="$HOME/.config/herdr/config.toml"
     if [[ ! -f "$conf" ]]; then
       mkdir -p "$(dirname "$conf")"
@@ -188,7 +195,7 @@ rows = [
 ]
 EOF2
     fi
-  ' || log "WARNING: could not seed herdr config for ${ADMIN_USER}"
+SEED
 fi
 
 log "granting ${ADMIN_USER} docker access + npm cache dir"
@@ -246,7 +253,9 @@ if [[ "$ENABLE_UFW" == "1" ]]; then
   log "ufw: allowing OpenSSH + mosh UDP range (note: published docker ports bypass ufw)"
   ufw allow OpenSSH
   ufw allow 60000:61000/udp comment 'mosh'
-  yes | ufw enable
+  # --force, NOT 'yes |': under pipefail, yes dies of SIGPIPE (141) when ufw
+  # closes stdin and set -e aborts provisioning right after enabling the fw.
+  ufw --force enable
 fi
 
 ##### verification & finishing touches #####
@@ -269,7 +278,7 @@ python3 -c 'import yaml; print("pyyaml", yaml.__version__)' || log "WARNING: pyy
 gh auth status 2>/dev/null || true # expect 'not logged in' until you run `gh auth login`
 command -v claude >/dev/null 2>&1 ||
   log "WARNING: claude not on PATH — apt install may have failed"
-sudo -iu "$ADMIN_USER" bash -lc 'claude --version' ||
+sudo -iu "$ADMIN_USER" claude --version ||
   log "WARNING: claude not runnable for ${ADMIN_USER}"
 google-chrome --version
 which xvfb-run || log "WARNING: xvfb missing — headed chrome unavailable"
