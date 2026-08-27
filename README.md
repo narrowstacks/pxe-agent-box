@@ -1,50 +1,60 @@
 # pxe-agent-box
 
-Disposable Proxmox dev boxes for agent workflows, one command each.
+A single, persistent Proxmox dev box for agent workflows.
 
-> **Are you an AI agent?** Skip the human tutorial — read
+> **Are you an AI agent?** Skip the human tutorial, read
 > [AGENTS.md](AGENTS.md) for a setup walkthrough built for you (questions to
 > ask, gotchas to check, exact commands to run).
 
-You build **one template** on your Proxmox host. After that, every new dev box
-is a single command — fully provisioned, your SSH keys already in it, ready in
-a few minutes. Throw boxes away freely; making a fresh one costs nothing.
+There is one box: VMID 104, named `devbox`, running Debian 13 (trixie). You
+build it once with `devbox.sh`, and from then on `devbox.sh rebuild`
+destroys and recreates it in place. Auth, dotfiles and tool config survive
+every rebuild; your working trees under `~/work` do not, and the rebuild gate
+exists specifically to keep that safe (see "Rebuild the box" below).
 
-## What's on each box
+## What's on the box
 
-**Default shell: zsh** (seeded `.zshrc`: history sharing, completion, autocd,
-zoxide). Every box also runs a login banner that live-checks the setup steps
-below and shows pending apt/npm/pip updates (refreshed twice daily by a
-systemd timer — never scanned at login).
+**Default shell: zsh** (a managed `.zshrc`: history sharing, completion,
+autocd, zoxide, starship prompt).
 
 | Category | Tools |
 | --- | --- |
-| TypeScript | bun · Node 24 LTS · pnpm · tsc/tsx/vitest/eslint/prettier (global) |
+| TypeScript | mise-managed Node LTS + bun · pnpm · tsc/tsx/vitest/eslint/prettier (npm globals) |
 | Agent CLIs | Claude Code (apt, `claude`) · opencode · pi · OpenAI Codex |
-| Browser | Chrome stable — `--headless=new`, or headed via `google-chrome-under-xvfb` |
-| Python | uv (+ `uvx`) · pytest/ruff/black/rich/httpx/pydantic/numpy · PyYAML |
-| Infra | Docker + compose · GitHub CLI · Tailscale · mosh (UDP 60000–61000 pre-opened) |
-| Terminals | herdr 0.8+ with a **pre-started `projects` workspace** · tmux · zoxide/fzf/ripgrep/fd |
+| Browser | Chrome stable (`--headless=new`), or headed via `google-chrome-under-xvfb` |
+| Python | uv (+ `uvx`), installed via mise's python |
+| Infra | Docker + compose · GitHub CLI · Tailscale · mosh (UDP 60000-61000 pre-opened) |
+| Terminals | herdr, pre-started · tmux · zoxide/fzf/ripgrep/fd |
 | Extras | sqlite3 · strace/lsof/ncdu · jq · rsync · build-essential · zsh |
 
-**Already running for you** (systemd user units, survive logins via linger):
+Node, Python and bun are owned by mise in the `dev` user's tree, reinstalled
+from the mise manifest (`~/.config/mise`, which persists) on every rebuild.
+Everything else root-installs, either through apt or directly into
+`/usr/local/bin`, and stays put across rebuilds because it lives on the fresh
+VM disk built from the same recipe every time.
 
-- `moshi-hook.service` — hook daemon; pair once from the iOS app and the box
-  appears with its herdr workspaces in Moshi's session picker. Claude agent
-  hooks are pre-installed.
-- `herdr-session.service` — holds the default herdr session open so Moshi and
-  `herdr` attach instantly. The workspace is named `projects` (with a matching
-  `~/projects` directory).
-- `agent-box-apt-status.timer` — refreshes the update counts shown in the
-  login banner every 12h.
+**Already running for you** (systemd user units, kept alive by linger):
+
+- `moshi-hook.service`: hook daemon; pair once from the iOS app and the box
+  appears in Moshi's session picker (with a workspace label of `~`, not a
+  project name, see the FAQ). Claude agent hooks are pre-installed.
+- `herdr-session.service`: holds the default herdr session open so Moshi and
+  `herdr` attach instantly. Don't use `herdr server stop` to walk away, that
+  kills every pane.
+
+There is no login-banner MOTD and no periodic apt-status timer; both were
+dropped as unnecessary surface area.
 
 Claude Code comes from Anthropic's signed apt repo (key fingerprint verified
-at provision time, stable channel) — upgrades ride normal `apt upgrade`.
-Provisioning tolerates individual failures: anything that can't install logs
-a `WARNING` in `/var/log/cloud-init-output.log` and the rest still completes.
+by `bootstrap.sh` at install time, stable channel); upgrades ride normal
+`apt upgrade`. Bootstrap tolerates individual tool failures: anything that
+can't install logs a `WARNING` and the rest still completes; only a
+core-chain failure (base packages, kernel tuning, persistent-state links,
+firewall) aborts loudly.
 
-Everything is installed by `cloud-init/provision.sh` on first boot. Nothing
-bloated, no desktop environment — see [FAQ](#faq) for console details.
+Everything is installed by `bootstrap.sh`, run inside the guest on first boot
+and re-runnable forever afterward. Nothing bloated, no desktop environment;
+see [FAQ](#faq) for console details.
 
 ---
 
@@ -59,13 +69,19 @@ your Mac.
 cp config.example.sh config.sh
 ```
 
-Edit `config.sh`. Three settings actually matter:
+Edit `config.sh`. What actually matters:
 
-- `SSH_KEY_FILES` — check these paths exist (`ls` them). The script refuses to
-  create a box you can't log into.
-- `STORAGE` — run `pvesm status` on your Proxmox host and pick a storage that
+- `SSH_KEY_FILES`: absolute paths, resolved on the PVE host. Check they
+  exist (`ls` them); `devbox.sh render` refuses to produce a snippet without
+  at least one key.
+- `STORAGE`: run `pvesm status` on your Proxmox host and pick a storage that
   exists and has space (`local-lvm` is the default install's answer).
-- `TEMPLATE_ID` — any free VM id; `9000` is fine unless you use it.
+- `VM_CORES` / `VM_MEMORY_MB` / `VM_DISK_SIZE_GB`: size against your host's
+  real RAM. On the reference host (32 GB, ~12 GB already committed to other
+  VMs), 16384 MB fits and 24576 MB would overcommit it.
+  `scripts/preflight.sh` checks memory fit before every `create`.
+- `DATA_HOST_DIR`: a plain directory on the PVE host that becomes `/data`
+  in the guest over virtiofs. This is the box's only persistent volume.
 
 Everything else has sane defaults.
 
@@ -74,77 +90,125 @@ Everything else has sane defaults.
 The scripts run **on the Proxmox host**, not your Mac.
 
 ```sh
-scp -r ./ root@<pve-host>:/root/agent-box
+rsync -av --delete --exclude .pi ./ root@<pve-host>:/root/agent-box/
+scp config.sh root@<pve-host>:/root/agent-box/config.sh   # keep local copy out of repo sync
 ```
 
-(`rsync -av --delete --exclude .pi ./ root@<pve-host>:/root/agent-box/` does the
-same but skips unchanged files — prefer it once you start editing.)
-
-### 3. Build the template — once
+### 3. Verify the host, then build the template (once)
 
 ```sh
 ssh root@<pve-host>
-cd /root/agent-box && chmod +x scripts/*.sh   # insurance if perms were lost in transit
-./scripts/build-template.sh
+cd /root/agent-box && chmod +x devbox.sh scripts/*.sh   # insurance if perms were lost in transit
+./devbox.sh preflight
+./devbox.sh template
 ```
 
-Downloads Ubuntu 24.04 Server cloud image (~700 MB), creates VM 9000, converts
-it to a template. Takes ~5 minutes. You never do this again unless Ubuntu
-releases a new image or you change `config.sh` infrastructure values.
+`preflight` checks Proxmox version, virtiofsd availability, storage, memory
+headroom, VMID conflicts, SSH keys, and reachability of every third-party apt
+repo and the Debian cloud image, before anything is built. `template`
+downloads the Debian 13 cloud image (~400 MB) and converts VM 9000 into a
+template. Takes a few minutes. You don't repeat this unless Debian ships a
+new trixie image or you change infrastructure values in `config.sh`.
+(`create`, below, also runs `preflight` itself, so you don't have to remember
+to call it separately before a fresh build.)
 
-### 4. Make boxes
+### 4. Create the box
 
 ```sh
-./scripts/create-vm.sh                     # defaults: 4 cores, 8 GB RAM, 80 GB disk
-./scripts/create-vm.sh -n ts-work -c 8 -m 32768   # bigger box
+./devbox.sh create
 ```
 
-Prints the IP when it's up. First boot provisions for a few minutes; watch it:
+Clones the template into VMID 104, mounts `/data`, and boots. Prints the
+guest IP once the QEMU guest agent reports one. The box picks up whatever
+address DHCP hands it, so don't assume it stays fixed across rebuilds.
+`bootstrap.sh` then runs inside the guest for several minutes; watch it:
 
 ```sh
-ssh dev@<ip> tail -f /var/log/cloud-init-output.log   # until "provisioning complete"
+ssh dev@<ip> tail -f /var/log/cloud-init-output.log
 ```
 
 Then `ssh dev@<ip>` and work.
 
-### 5. Delete boxes
+### 5. Rebuild the box
 
 ```sh
-./scripts/delete-vm.sh ts-work             # asks for confirmation
-./scripts/delete-vm.sh 9101 --force        # doesn't ask
+./devbox.sh rebuild
 ```
 
-That's the whole lifecycle: build-template → create → delete → create again.
+Destroys VMID 104 and recreates it from the template, exactly like `create`.
+`/data` (and therefore everything under it) is untouched. Before it destroys
+anything, `rebuild`:
+
+1. Refuses if `~/work` has uncommitted changes, unpushed commits, non-git
+   directories with contents, or loose files/dotfiles.
+2. Snapshots `~/work` to `/data/work-snapshots` anyway (belt and braces,
+   keeping the last three snapshots) once the gate above passes.
+3. Prompts you to type the VM name to confirm.
+
+Pass `--force` to skip the gate and snapshot and rebuild immediately. This
+is a deliberate, destructive escape hatch, not a shortcut to reach for by
+habit.
+
+That's the lifecycle: `preflight` → `template` (once) → `create` (once) →
+`rebuild` (repeatedly, whenever you want a clean box).
+
+### Iterating on `bootstrap.sh` itself
+
+`bootstrap.sh` runs inside the guest and is idempotent. scp your edit over
+and re-run it as `sudo devbox-bootstrap` to test a change. Don't rebuild the
+VM to test a bootstrap edit; that's slow and defeats the point of an
+idempotent script. `devbox-bootstrap --update` re-fetches the script from
+`BOOTSTRAP_URL` and re-execs it, which is how a live box picks up a change
+that's already been pushed.
 
 ---
 
-## One-time account setup per box
+## What persists and what doesn't
 
-The login banner tracks these live — completed steps flip to ✔ on your next
-login, so the banner itself is your checklist:
+- **`/data` (virtiofs, backed by `DATA_HOST_DIR` on the host) survives every
+  rebuild.** Auth state (`~/.claude`, `~/.config/gh`, `~/.config/herdr`,
+  `~/.config/moshi`, `~/.config/mise`, `~/.gitconfig`, `~/.ssh/known_hosts`),
+  the managed `~/.zshrc`/`~/.zshenv`, and Tailscale's node identity (so the
+  MagicDNS name doesn't change) all live there as symlink targets.
+- **`~/work` does NOT survive a rebuild.** It lives on the VM's own disk,
+  which `rebuild` destroys and recreates. That's exactly why `rebuild`
+  refuses to run against a dirty `~/work` and snapshots it to
+  `/data/work-snapshots` first, see "Rebuild the box" above.
+- Toolchains under `~/.local/share/mise` also live on the VM disk and are
+  reinstalled from the mise manifest (which *does* persist) on every
+  rebuild.
+
+## One-time account setup
+
+Do these once, the first time you get a shell on a freshly created box:
 
 1. **Tailscale**: `sudo tailscale up` (gives you a stable hostname + tailnet
    access from anywhere)
 2. **GitHub CLI**: `gh auth login`
 3. **Claude Code**: `claude login` (or `export ANTHROPIC_API_KEY`)
-4. **Moshi** (optional): pair the phone app with
-   `moshi-hook pair --token <token>` — token comes from Moshi → Settings → Hooks
-   (the daemon is already running; pairing is the only missing piece)
+4. **Moshi** (optional): `moshi-hook pair --token <token>`. Token comes from
+   Moshi > Settings > Hooks (the daemon is already running; pairing is the
+   only missing piece)
+
+After the first time, all four persist across every `rebuild`. That is the
+whole point of the `/data` persistence design. You should never need to redo
+this list unless you deliberately wipe `/data`.
 
 ## Daily workflow notes
 
-- **herdr**: pre-started at boot — `herdr` attaches instantly (detach with
-  `ctrl+b q`, panes keep running). Don't use `herdr server stop` to walk away —
-  that kills every pane. Workspaces live under `~/projects`.
+- **herdr**: pre-started at boot; `herdr` attaches instantly (detach with
+  `ctrl+b q`, panes keep running). Don't use `herdr server stop` to walk away,
+  that kills every pane. Moshi's picker currently shows the workspace label
+  as `~`, not a project name; see the FAQ.
 - **Moshi**: point the iOS app at this box over SSH or Mosh; the paired hook
-  daemon serves its session picker, so herdr workspaces appear automatically
-  (both transports). With moshi-hook paired, blocked agents send push
-  notifications that deep-link to the exact pane. For Mosh transports, set the
-  connection's *Mosh server path* to `/usr/bin/mosh-server` if the app asks.
-- **mosh**: works out of the box after provisioning (`ufw` already allows UDP
-  60000–61000). Survives laptop sleep and network switches.
-- Override per-box packages in `config.sh`: `EXTRA_APT_PACKAGES`,
-  `NPM_GLOBALS`, `PIP_PACKAGES`.
+  daemon serves its session picker, so the herdr session appears
+  automatically (both transports). With moshi-hook paired, blocked agents
+  send push notifications that deep-link to the exact pane. For Mosh
+  transports, set the connection's *Mosh server path* to
+  `/usr/bin/mosh-server` if the app asks.
+- **mosh**: works out of the box (`ufw` already allows UDP 60000-61000).
+  Survives laptop sleep and network switches.
+- Override packages in `config.sh`: `EXTRA_APT_PACKAGES`, `MISE_TOOLS`.
 
 ## Config reference
 
@@ -152,59 +216,85 @@ Every knob lives in `config.example.sh` with comments. Highlights:
 
 | Knob | Meaning | Default |
 | --- | --- | --- |
-| `TEMPLATE_ID` | VM id of the gold template | `9000` |
+| `TEMPLATE_ID` / `VMID` / `VMNAME` | template and box identity | `9000` / `104` / `devbox` |
 | `STORAGE` / `SNIPPET_STORAGE` | where disks/cloud-init files live | `local-lvm` / `local` |
 | `BRIDGE` / `NET_VLAN_TAG` | network attach | `vmbr0` / untagged |
-| `STATIC_IP` / `GATEWAY` | skip DHCP | DHCP |
-| `VM_CORES` / `VM_MEMORY_MB` / `VM_DISK_SIZE_GB` | box size at clone time | 4 / 8192 / 80 |
-| `ADMIN_USER` | login user created on each box | `dev` |
-| `SSH_KEY_FILES` | pubkeys baked into every box | `~/.ssh/*.pub` |
-| `NODE_MAJOR` | Node LTS line alongside bun | `24` |
-| `SWAP_SIZE_GB` / `ENABLE_UFW` | guest tuning | 8 / on |
-
-CLI flags override config per-box: `create-vm.sh -n name -i vmid -c cores -m memoryMiB -d diskGB [--no-start]`.
+| `STATIC_IP` / `GATEWAY` / `SEARCH_DOMAIN` | skip DHCP | DHCP |
+| `VM_CORES` / `VM_MEMORY_MB` / `VM_DISK_SIZE_GB` | box size | `8` / `16384` / `160` |
+| `ADMIN_USER` | login user (uid 1000) created on the box | `dev` |
+| `SSH_KEY_FILES` | pubkeys baked into the box, absolute host paths | `/root/.ssh/*.pub` |
+| `DATA_HOST_DIR` / `DATA_MAP_ID` | host directory backing `/data`, and its Proxmox directory-mapping ID | `/srv/devdata` / `devdata` |
+| `CLOUD_IMAGE_URL` | Debian 13 cloud image to build the template from | trixie genericcloud qcow2 |
+| `BOOTSTRAP_URL` | where the guest fetches `bootstrap.sh` from on first boot | `raw.githubusercontent.com/.../main/bootstrap.sh` |
+| `MISE_TOOLS` | toolchains mise installs into the user tree | `node@lts python@3.13 bun@latest` |
+| `SWAP_SIZE_GB` / `ENABLE_UFW` | guest tuning | `8` / on |
+| `EXTRA_APT_PACKAGES` | extra apt packages, space-separated | empty |
 
 ## FAQ
 
 **Is there a GUI/VNC?**
 No desktop environment. The Proxmox web console shows a *text* serial console
-(boot messages + login prompt) — enough to fix a broken SSH config. For visual
+(boot messages + login prompt), enough to fix a broken SSH config. For visual
 browser work, agents use `google-chrome --headless=new`; when something insists
 on headed Chrome, `google-chrome-under-xvfb <url>` runs it in a virtual
-1920×1080 framebuffer.
+1920x1080 framebuffer.
+
+**Why does Moshi's picker show `~` instead of a project name?**
+An earlier design assumed a `~/projects` directory would become the
+workspace label. It doesn't: herdr derives the label from the session's
+working directory, the pre-started `herdr-session.service` unit sets none,
+and it defaults to `$HOME`. A prior attempt at pinning
+`WorkingDirectory=%h/projects` on that unit moved the process's cwd but did
+not change the picker label. This isn't fixed. A real fix would likely go
+through `herdr workspace rename <id> <label>` after the session starts;
+that's a possible follow-up, not something this repo does today.
 
 **Static IP instead of DHCP?**
-Set `STATIC_IP="10.0.0.42/24"` (and `GATEWAY`) in `config.sh` before creating
-boxes.
+Set `STATIC_IP="10.0.0.42/24"` (and `GATEWAY`) in `config.sh` before running
+`create`.
 
 **Template upgrade?**
-Re-run `build-template.sh --force` (destroys + rebuilds only the template;
-existing boxes are untouched). Then future `create-vm.sh` calls use it.
+Re-run `./devbox.sh template --force` (destroys + rebuilds only the
+template; the running box is untouched). Then the next `./devbox.sh rebuild`
+uses it.
 
-**Something broke mid-provision?**
-Check `ssh dev@<ip> tail -50 /var/log/cloud-init-output.log`; re-provision by
-deleting and recreating the box — cheap by design. Emergency console:
-`qm terminal <vmid>` on the host.
+**Something broke mid-bootstrap?**
+Check `ssh dev@<ip> tail -50 /var/log/cloud-init-output.log`. Since
+`bootstrap.sh` is idempotent, re-running it as `sudo devbox-bootstrap` is
+usually enough; reach for `./devbox.sh rebuild` only if the box itself is
+unrecoverable. Emergency console: `qm terminal 104` on the host.
 
-**Where are per-box cloud-init files?**
-`${SNIPPET_STORAGE}:snippets/<name>-<vmid>.yml` on the PVE host.
-`delete-vm.sh` cleans them up automatically.
+**Where's the per-box cloud-init file?**
+`${SNIPPET_STORAGE}:snippets/devbox.yaml` on the PVE host, regenerated by
+`devbox.sh create`/`rebuild` from `cloud-init/devbox.yaml.tpl` every time.
+
+**How do I see what the cloud-init snippet would look like without touching
+anything?**
+`./devbox.sh render` prints it to stdout. `DRYRUN=1 ./devbox.sh create` (or
+`rebuild`) prints every `qm`/`pvesh` command it would run instead of running
+them.
 
 ## Files
 
 ```text
-config.example.sh         copy to config.sh, edit three settings (see step 1)
-scripts/build-template.sh PVE host: Ubuntu image → cloud-init template (once)
-scripts/create-vm.sh      PVE host: clone template → provisioned box
-scripts/delete-vm.sh      PVE host: destroy box + its snippet
-cloud-init/provision.sh   guest: installs everything on first boot
+config.example.sh          copy to config.sh and edit (see step 1)
+devbox.sh                  PVE host: preflight, salvage, template, render, create, rebuild
+cloud-init/devbox.yaml.tpl rendered into the per-box cloud-init snippet
+bootstrap.sh               guest: converges the box on first boot, re-runnable forever
+scripts/preflight.sh       PVE host: verifies the host before anything is built
+scripts/lint.sh            Mac/CI: bash -n + shellcheck + dash -n over every shell file
+scripts/smoke-test.sh      Mac/CI: assertion suite against a booted box (the gate for every change)
+tests/test-render.sh       Mac/CI: unit tests for cloud-init snippet rendering
+HANDOFF-SIMPLIFICATION.md  incident record behind the rules enforced in bootstrap.sh
 ```
 
 ## Security notes
 
-- Boxes only accept SSH (and mosh) inbound; password auth is disabled; root
-  login disabled; sudo is NOPASSWD for your user on a private lab network —
-  tighten if this faces the internet.
-- Docker-published ports bypass ufw by design — don't bind services to
+- The box only accepts SSH (and mosh) inbound; password auth is disabled;
+  root login is disabled; sudo is NOPASSWD for the admin user on a private
+  lab network; tighten if this faces the internet.
+- Docker-published ports bypass ufw by design; don't bind services to
   `0.0.0.0` you didn't mean to expose.
 - moshi-hook listens on localhost only and relays via your paired device.
+- The admin user is in the `docker` group, which is effectively root on this
+  guest. Accepted here because the VM itself is the security boundary.

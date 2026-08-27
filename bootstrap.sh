@@ -360,12 +360,11 @@ if ! command -v herdr >/dev/null 2>&1; then
   # herdr's installer dies on "HOME: parameter not set" without it.
   export HOME="${HOME:-/root}"
   # HERDR_INSTALL_DIR must ride the SH side of the pipe. An env prefix on the
-  # curl side never reaches the installer.
+  # curl side never reaches the installer. Confirmed working directly into
+  # /usr/local/bin, so there is no cross-tree fallback copy here: unlike
+  # moshi-hook below, herdr's own install-dir override actually works.
   curl -fsSL https://herdr.dev/install.sh | HERDR_INSTALL_DIR=/usr/local/bin sh >/dev/null \
     || warn "herdr install failed"
-  if ! command -v herdr >/dev/null 2>&1 && [[ -x /root/.local/bin/herdr ]]; then
-    install -m 0755 /root/.local/bin/herdr /usr/local/bin/herdr
-  fi
 fi
 
 if ! command -v moshi-hook >/dev/null 2>&1; then
@@ -672,8 +671,14 @@ EOF
 
 chown -R 1000:1000 "${DEV_HOME}/.config/systemd"
 
-# ~/projects is the herdr workspace home, so the picker shows "projects"
-# rather than a bare "~" home-dir workspace.
+# Moshi's picker shows the herdr workspace label as "~", not a project name.
+# herdr derives the label from the session's working directory, and this
+# unit has none set, so it defaults to $HOME. A prior attempt at
+# WorkingDirectory=%h/projects on herdr-session.service moved the process
+# cwd but did NOT change the picker label; do not re-try that fix here. The
+# mkdir below is not load-bearing for the label. A real fix would go through
+# 'herdr workspace rename <id> <label>' after the session starts (see
+# 'herdr workspace rename --help'); left as a follow-up, not implemented.
 as_user <<'EOF'
 set -euo pipefail
 export XDG_RUNTIME_DIR="/run/user/$(id -u)"

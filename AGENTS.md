@@ -1,79 +1,86 @@
-# AGENTS.md — pxe-agent-box
+# AGENTS.md: pxe-agent-box
 
 Guidance for AI agents working in this repository. Humans: the canonical
 workflow doc is [README.md](README.md).
 
 ## What this repo is
 
-Proxmox VE tooling that turns a stock Proxmox host into a source of disposable,
-fully-provisioned Linux dev boxes for agent workflows. `build-template.sh`
-creates one Ubuntu 24.04 cloud-init template; `create-vm.sh` clones it into
-sized boxes with SSH keys baked in; `cloud-init/provision.sh` installs the
-actual software inside each box on first boot.
+Proxmox VE tooling that builds and maintains a single, persistent Linux dev
+box for agent workflows. `devbox.sh` runs on the Proxmox host and drives the
+whole lifecycle (verbs: `preflight`, `salvage`, `template`, `render`,
+`create`, `rebuild`). `bootstrap.sh` runs inside the guest, is idempotent,
+and converges the box into its final state on first boot and on every
+re-run afterward. There is one box: VMID 104, named `devbox`, on Debian 13
+(trixie).
 
-## Helping a user initialize a new VM
+## Helping a user work on the box
 
-When a user asks you to create a dev box ("spin up a box", "new agent VM",
-"set up first-test"), walk them through this checklist. Ask before assuming —
-every question below has bitten someone.
+When a user asks about "the dev box", "devbox", or "the agent VM", they mean
+the one persistent box, not a fleet. Common asks and what they map to:
 
-### 1. Gather what you must know (ask, don't guess)
+- **"Build it for the first time"**: `./devbox.sh preflight` then
+  `./devbox.sh template` then `./devbox.sh create`, from `/root/agent-box`
+  on the Proxmox host. `create` also runs preflight itself.
+- **"Rebuild it" / "give me a clean box"**: `./devbox.sh rebuild`. This
+  destroys and recreates VMID 104. It refuses if `~/work` on the box has
+  uncommitted changes, unpushed commits, non-git directories with contents,
+  or loose files, and it snapshots `~/work` to `/data/work-snapshots` first.
+  `/data` itself, and everything symlinked into it (auth, dotfiles, tool
+  config), is never touched by a rebuild.
+- **"Something's broken on the box, fix it"**: this almost always means
+  editing `bootstrap.sh` and re-running it inside the guest, NOT rebuilding
+  the VM. See the next section.
 
-1. **PXE/PVE node name or IP** — which Proxmox host? (`ssh root@<host>` must
-   work from here; verify with a quick `ssh root@<host> pveversion`.)
-2. **Are your keys already on that host?** Check whether the user's public
-   keys exist on the PVE host:
+### `bootstrap.sh` is iterated by scp-and-run, never by rebuilding the VM
 
-   ```sh
-   ssh root@<host> 'ls /root/.ssh/*.pub'
-   ```
-
-   If missing, offer to copy them (`scp ~/.ssh/id_ed25519.pub root@<host>:/root/.ssh/`)
-   and ask **which keys** they want — see the key-preferences question below.
-3. **SSH key preference** — which public keys should be baked into boxes?
-   - Ask if they have multiple: main laptop key, phone/tablet key, etc.
-   - Recommend *excluding* git-signing-only keys.
-4. **Sizing** — cores/RAM/disk for the workload. Defaults are 4c/8GB/80GB;
-   recommend more RAM (16–32 GB) and disk for heavy Chrome or Docker use.
-5. **Package preferences** — `config.sh` knobs to tune, with recommendations:
-   - `EXTRA_APT_PACKAGES`: suggest `postgresql-client redis-tools ffmpeg` only
-     if their projects touch those services.
-   - `NPM_GLOBALS`: defaults (typescript tsx @types/node prettier eslint vitest
-     concurrently http-server) fit most TS work — ask about extras like
-     `drizzle-kit prisma turbo nx`.
-   - `PIP_PACKAGES`: defaults cover most scripting; add project-specific ones.
-6. **Static IP vs DHCP** — DHCP default; ask only if their network has IP
-   bookkeeping needs (`STATIC_IP` + `GATEWAY` in config.sh).
-
-### 2. Verify prerequisites before running anything
-
-- `/root/.ssh/<chosen>.pub` exists on the host for every chosen key
-- `pvesm status` shows `STORAGE` (default `local-lvm`) active with space
-- VMID conflicts: `qm list`; template existence: `qm status $TEMPLATE_ID`
-
-### 3. Run the flow
+`bootstrap.sh` is idempotent and safe to re-run at any time as
+`sudo devbox-bootstrap`. The fast loop for a change to it is:
 
 ```sh
-# on the Mac (one-time per change):
-rsync -av --delete --exclude .pi ./ root@<host>:/root/agent-box/
-scp config.sh root@<host>:/root/agent-box/config.sh  # keep local copy out of repo sync
-
-# on the host:
-/root/agent-box/scripts/create-vm.sh -n <name> [-i <vmid>] [-c N] [-m N] [-d N]
+scp bootstrap.sh dev@<ip>:/tmp/bootstrap.sh
+ssh dev@<ip> 'sudo install -m 0755 /tmp/bootstrap.sh /usr/local/sbin/devbox-bootstrap && sudo devbox-bootstrap'
 ```
 
-The script prints the guest IP when the agent reports it. Provisioning then
-runs ~5–10 min inside the guest — watch with:
+Rebuilding the VM to test a one-line bootstrap edit is slow (a full
+reprovision) and defeats the entire point of writing an idempotent script.
+Reach for `./devbox.sh rebuild` only when you actually need a clean VM disk
+(for example, testing that a fresh first boot converges correctly), not to
+pick up a bootstrap edit.
 
-```sh
-ssh root@<host> 'qm guest exec <vmid> -- tail -f /var/log/cloud-init-output.log'
-```
+After a change lands and is pushed, a live box can also pick it up with
+`sudo devbox-bootstrap --update`, which re-fetches from `BOOTSTRAP_URL` and
+re-execs.
 
-### 4. Report back to the user
+### The four rules in `bootstrap.sh` are load-bearing
 
-Give them: VMID, name, IP, how to connect (`ssh dev@<ip>`, or Moshi on the
-phone), and the one-time account setup list (tailscale up, gh auth login,
-claude login, moshi-hook pair) from README.md.
+The top of `bootstrap.sh` states four rules, and every one of them exists
+because of a real incident recorded in `HANDOFF-SIMPLIFICATION.md`:
+
+1. One tool, one install tree, chosen by who updates it. No cross-tree
+   symlinks or copies.
+2. Every file written to `/etc/profile.d` must parse under dash.
+3. `~/.zshrc` is managed and lives on `/data`. starship owns the prompt.
+4. No `sudo -i` with multi-line arguments. No pipeline under `pipefail`
+   whose producer outlives its consumer.
+
+Do not "simplify" one of these away, collapse a workaround you don't
+immediately recognize, or "clean up" a comment that looks unnecessarily
+defensive, without reading `HANDOFF-SIMPLIFICATION.md` first. Each rule maps
+to hours of live-fire debugging across full VM rebuilds; the fix usually
+looks over-engineered in isolation and is not.
+
+### Verifying a change
+
+- `./scripts/lint.sh`: bash -n + shellcheck + dash -n over every shell file
+  in the repo. Run before committing anything.
+- `./tests/test-render.sh`: unit tests for cloud-init snippet rendering, no
+  Proxmox host needed. Run after touching `devbox.sh` or
+  `cloud-init/devbox.yaml.tpl`.
+- `./scripts/smoke-test.sh <user@host>`: the gate for every change that
+  touches guest state, run against a booted box. `SKIP_SLOW=1` skips the
+  slow idempotency section (a full `devbox-bootstrap` re-run) for fast
+  iteration; the full run (no `SKIP_SLOW`) is what actually proves
+  idempotency and should not be skipped before calling a change done.
 
 ## Repo conventions
 
