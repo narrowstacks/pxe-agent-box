@@ -180,6 +180,34 @@ for b in moshi moshi-hook; do
 done
 command -v moshi >/dev/null 2>&1 || log "WARNING: moshi missing"
 
+# Run the hook daemon under systemd --user (linger is enabled below, so it
+# starts at boot without any login). Without this the daemon only lives as
+# long as the SSH session that started it, and Moshi loses multiplexer
+# discovery (herdr/tmux workspaces) the moment that session closes.
+if command -v moshi-hook >/dev/null 2>&1; then
+  sudo -iu "$ADMIN_USER" bash -s <<'MOSHIUNIT'
+mkdir -p "$HOME/.config/systemd/user"
+cat > "$HOME/.config/systemd/user/moshi-hook.service" <<'UNIT'
+[Unit]
+Description=Moshi hook daemon (agent hooks + Moshi bridge)
+After=network-online.target
+
+[Service]
+ExecStart=%h/.local/bin/moshi-hook serve
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+UNIT
+systemctl --user daemon-reload
+systemctl --user enable --now moshi-hook.service
+MOSHIUNIT
+  # pre-install agent hook integrations (claude now; others pair later)
+  sudo -iu "$ADMIN_USER" moshi-hook install --target claude >/dev/null 2>&1 ||
+    log "WARNING: moshi-hook claude hooks not installed (claude may not be present yet)"
+fi
+
 log "allowing ${ADMIN_USER}'s user daemons (herdr/moshi-hook) to run without an active login session"
 loginctl enable-linger "$ADMIN_USER" 2>/dev/null || true
 
