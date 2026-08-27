@@ -86,8 +86,13 @@ ln -sf /root/.local/bin/uvx /usr/local/bin/uvx
 pip3 install --break-system-packages --ignore-installed --no-input ${PIP_PACKAGES}
 
 log "installing Claude Code via the official installer (as ${ADMIN_USER}; lands in ~/.local/bin)"
-sudo -iu "$ADMIN_USER" bash -c \
-  'curl -fsSL https://claude.ai/install.sh | bash' # nosemgrep: bash.curl.security.curl-pipe-bash.curl-pipe-bash (Anthropic's own installer over TLS)
+# Tolerate failure: some installer builds busy-loop post-download on headless
+# guests; a wedged install must not abort provisioning. The banner checklist
+# and verification step below surface it if missing.
+# nosemgrep: bash.curl.security.curl-pipe-bash.curl-pipe-bash (Anthropic's own installer over TLS)
+sudo -iu "$ADMIN_USER" timeout 300 bash -c \
+  'curl -fsSL https://claude.ai/install.sh | bash' ||
+  log "WARNING: claude installer failed/timed out — run later as ${ADMIN_USER}: curl -fsSL https://claude.ai/install.sh | bash"
 
 log "installing Google Chrome stable (full GUI + headless in one binary)"
 CHROME_DEB="$(mktemp /tmp/chrome-XXXXXX.deb)"
