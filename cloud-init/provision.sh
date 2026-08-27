@@ -299,6 +299,11 @@ EOF2
 SEED
 fi
 
+log "installing starship prompt (user-local, no sudo)"
+curl -sS https://starship.rs/install.sh | sh -s -- -b "$HOME/.local/bin" --yes >/dev/null 2>&1 ||
+  log "WARNING: starship install failed — rerun later as ${ADMIN_USER}: curl -sS https://starship.rs/install.sh | sh -s -- -b ~/.local/bin --yes"
+# .zshrc above already eval's starship when present (guarded), nothing more to wire
+
 log "granting ${ADMIN_USER} docker access + npm cache dir"
 usermod -aG docker "$ADMIN_USER" || true
 sudo -u "$ADMIN_USER" bash -c 'mkdir -p ~/.cache/node-gyp ~/.npm'
@@ -328,6 +333,9 @@ command -v zoxide >/dev/null 2>&1 && eval "$(zoxide init zsh)"
 
 # node version managers commonly drop shims here; keep it ahead
 [[ -d "$HOME/.local/bin" ]] && export PATH="$HOME/.local/bin:$PATH"
+
+# starship prompt
+command -v starship >/dev/null 2>&1 && eval "$(starship init zsh)"
 ZRC
 fi
 ZSHRC
