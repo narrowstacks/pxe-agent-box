@@ -5,7 +5,11 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 fail=0
-mapfile -t files < <(git ls-files '*.sh')
+# --others --exclude-standard also lists NEW files that are not yet
+# staged. Without them the gate silently skips the file you are
+# currently writing and reports clean, which is how a lint failure
+# shipped in a commit that claimed lint passed.
+mapfile -t files < <(git ls-files --cached --others --exclude-standard '*.sh')
 
 for f in "${files[@]}"; do
   if ! bash -n "$f"; then
