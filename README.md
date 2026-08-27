@@ -12,15 +12,36 @@ a few minutes. Throw boxes away freely; making a fresh one costs nothing.
 
 ## What's on each box
 
+**Default shell: zsh** (seeded `.zshrc`: history sharing, completion, autocd,
+zoxide). Every box also runs a login banner that live-checks the setup steps
+below and shows pending apt/npm/pip updates (refreshed twice daily by a
+systemd timer — never scanned at login).
+
 | Category | Tools |
 | --- | --- |
 | TypeScript | bun · Node 24 LTS · pnpm · tsc/tsx/vitest/eslint/prettier (global) |
-| Agent CLIs | Claude Code · opencode · pi · OpenAI Codex |
+| Agent CLIs | Claude Code (apt, `claude`) · opencode · pi · OpenAI Codex |
 | Browser | Chrome stable — `--headless=new`, or headed via `google-chrome-under-xvfb` |
-| Python | uv · pytest/ruff/black/rich/httpx/pydantic/numpy · PyYAML |
-| Infra | Docker + compose · GitHub CLI · Tailscale · mosh |
-| Terminals | herdr (persistent agent runtime) · tmux · zoxide/fzf/ripgrep/fd |
-| Extras | sqlite3 · strace/lsof/ncdu · jq · rsync · build-essential |
+| Python | uv (+ `uvx`) · pytest/ruff/black/rich/httpx/pydantic/numpy · PyYAML |
+| Infra | Docker + compose · GitHub CLI · Tailscale · mosh (UDP 60000–61000 pre-opened) |
+| Terminals | herdr 0.8+ with a **pre-started `projects` workspace** · tmux · zoxide/fzf/ripgrep/fd |
+| Extras | sqlite3 · strace/lsof/ncdu · jq · rsync · build-essential · zsh |
+
+**Already running for you** (systemd user units, survive logins via linger):
+
+- `moshi-hook.service` — hook daemon; pair once from the iOS app and the box
+  appears with its herdr workspaces in Moshi's session picker. Claude agent
+  hooks are pre-installed.
+- `herdr-session.service` — holds the default herdr session open so Moshi and
+  `herdr` attach instantly. The workspace is named `projects` (with a matching
+  `~/projects` directory).
+- `agent-box-apt-status.timer` — refreshes the update counts shown in the
+  login banner every 12h.
+
+Claude Code comes from Anthropic's signed apt repo (key fingerprint verified
+at provision time, stable channel) — upgrades ride normal `apt upgrade`.
+Provisioning tolerates individual failures: anything that can't install logs
+a `WARNING` in `/var/log/cloud-init-output.log` and the rest still completes.
 
 Everything is installed by `cloud-init/provision.sh` on first boot. Nothing
 bloated, no desktop environment — see [FAQ](#faq) for console details.
@@ -99,23 +120,27 @@ That's the whole lifecycle: build-template → create → delete → create agai
 
 ## One-time account setup per box
 
-Provisioning can't do these for you — they need a browser or your phone:
+The login banner tracks these live — completed steps flip to ✔ on your next
+login, so the banner itself is your checklist:
 
 1. **Tailscale**: `sudo tailscale up` (gives you a stable hostname + tailnet
    access from anywhere)
 2. **GitHub CLI**: `gh auth login`
-3. **Claude Code**: just runs `claude` and log in
+3. **Claude Code**: `claude login` (or `export ANTHROPIC_API_KEY`)
 4. **Moshi** (optional): pair the phone app with
    `moshi-hook pair --token <token>` — token comes from Moshi → Settings → Hooks
+   (the daemon is already running; pairing is the only missing piece)
 
 ## Daily workflow notes
 
-- **herdr**: run `herdr` inside ssh/mosh. Detach with `ctrl+b q` (panes keep
-  running), reattach with plain `herdr`. Don't use `herdr server stop` to walk
-  away — that kills every pane.
-- **Moshi**: point the iOS app at this box over SSH/Mosh; detached herdr
-  sessions appear in its picker. With moshi-hook paired, blocked agents send
-  push notifications that deep-link to the exact pane.
+- **herdr**: pre-started at boot — `herdr` attaches instantly (detach with
+  `ctrl+b q`, panes keep running). Don't use `herdr server stop` to walk away —
+  that kills every pane. Workspaces live under `~/projects`.
+- **Moshi**: point the iOS app at this box over SSH or Mosh; the paired hook
+  daemon serves its session picker, so herdr workspaces appear automatically
+  (both transports). With moshi-hook paired, blocked agents send push
+  notifications that deep-link to the exact pane. For Mosh transports, set the
+  connection's *Mosh server path* to `/usr/bin/mosh-server` if the app asks.
 - **mosh**: works out of the box after provisioning (`ufw` already allows UDP
   60000–61000). Survives laptop sleep and network switches.
 - Override per-box packages in `config.sh`: `EXTRA_APT_PACKAGES`,
