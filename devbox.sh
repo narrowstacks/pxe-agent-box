@@ -236,20 +236,24 @@ render_snippet() {
 
 ensure_data_mapping() {
   run mkdir -p "$DATA_HOST_DIR"
-  run mkdir -p /etc/pve/mapping
 
-  if grep -q "^dir: ${DATA_MAP_ID}\$" /etc/pve/mapping/dir.cfg 2>/dev/null; then
+  # Register through PVE's API, never by hand-writing the config. The
+  # mapping lives in /etc/pve/mapping/directory.cfg (NOT dir.cfg) and its
+  # format carries no "dir:" section prefix, so a hand-written file is
+  # silently ignored: pvesh reports nothing and qm start fails with
+  # "Directory ID <id> does not exist". Letting the API own the format
+  # means a future PVE release changing it does not break us.
+  if pvesh get /cluster/mapping/dir --output-format json 2>/dev/null \
+     | grep -q "\"id\":\"${DATA_MAP_ID}\""; then
     return 0
   fi
 
   log "creating directory mapping '${DATA_MAP_ID}' -> ${DATA_HOST_DIR}"
-  if [[ "${DRYRUN:-0}" == "1" ]]; then
-    printf '  [dryrun] append dir mapping %s\n' "$DATA_MAP_ID"
-    return 0
-  fi
-  # The map line must be TAB-indented; PVE's parser rejects spaces.
-  printf '\ndir: %s\n\tmap node=%s,path=%s\n' \
-    "$DATA_MAP_ID" "$(hostname)" "$DATA_HOST_DIR" >>/etc/pve/mapping/dir.cfg
+  # Re-creating an existing mapping is an ERROR, not a no-op
+  # ("dir ID 'x' already defined"), so the check above is mandatory.
+  run pvesh create /cluster/mapping/dir \
+    --id "$DATA_MAP_ID" \
+    --map "node=$(hostname),path=${DATA_HOST_DIR}"
 }
 
 cmd_create() {
