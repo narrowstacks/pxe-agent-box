@@ -244,6 +244,12 @@ link_state_file ssh/known_hosts   .ssh/known_hosts
 # operator drops a key in; never generated here.
 link_state_file_optional ssh/id_ed25519      .ssh/id_ed25519
 link_state_file_optional ssh/id_ed25519.pub  .ssh/id_ed25519.pub
+# The git commit signing key, kept separate from the auth key above so it is
+# never offered to a server. allowed_signers is what 'git log --show-signature'
+# checks against; without it verification reports "no principal matched".
+link_state_file_optional ssh/gh-sign          .ssh/gh-sign
+link_state_file_optional ssh/gh-sign.pub      .ssh/gh-sign.pub
+link_state_file_optional ssh/allowed_signers  .ssh/allowed_signers
 chown -R 1000:1000 "${DATA}/state/ssh"
 
 mkdir -p "${DATA}/work-snapshots"
