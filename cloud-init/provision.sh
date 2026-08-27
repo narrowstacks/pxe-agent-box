@@ -370,9 +370,13 @@ systemctl enable --now fstrim.timer
 
 log "configuring zoxide smart-cd hook (bash + zsh)"
 cat >/etc/profile.d/zoxide.sh <<'EOF'
-# zoxide smart-cd (interactive shells only)
-command -v zoxide >/dev/null 2>&1 || return 0 2>/dev/null || exit 0
-eval "$(zoxide init bash)" 2>/dev/null
+# zoxide for bash logins only (zsh gets zoxide.zsh). Guard on BASH_VERSION:
+# /etc/profile sources this for sh/dash login shells too, and SSH clients
+# (Moshi) probe via 'sh -lc' — zoxide's bash output has bashisms that crash
+# dash and break the probe.
+if [ "${BASH_VERSION:-}" ]; then
+  command -v zoxide >/dev/null 2>&1 && eval "$(zoxide init bash)" 2>/dev/null
+fi
 EOF
 # zsh loads profile.d via /etc/zsh/zprofile on Ubuntu; the eval above is bash
 # syntax — give zsh its own hook with correct syntax.
