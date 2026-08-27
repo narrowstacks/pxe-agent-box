@@ -1,0 +1,9 @@
+# Local configuration — copy from config.example.sh and customize
+config.sh
+
+# macOS
+.DS_Store
+
+# Editor/agent cruft
+.pi/
+*.swp
