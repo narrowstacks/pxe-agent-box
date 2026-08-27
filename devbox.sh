@@ -127,8 +127,48 @@ sys.stdout.buffer.write(base64.b64decode(payload))' \
   du -sh "$dest"/* 2>/dev/null || true
 }
 
+##### template #####
+
+IMAGE_PATH="/var/lib/vz/template/iso/$(basename "$CLOUD_IMAGE_URL")"
+
+cmd_template() {
+  local force="${1:-}"
+
+  if qm status "$TEMPLATE_ID" >/dev/null 2>&1; then
+    [[ "$force" == "--force" ]] \
+      || fail "VMID $TEMPLATE_ID exists; pass --force to destroy and rebuild it"
+    log "destroying existing template $TEMPLATE_ID"
+    run qm destroy "$TEMPLATE_ID" --purge 1
+  fi
+
+  if [[ ! -f "$IMAGE_PATH" ]]; then
+    log "downloading $(basename "$CLOUD_IMAGE_URL")"
+    run wget -qO "$IMAGE_PATH" "$CLOUD_IMAGE_URL"
+  fi
+
+  log "creating template $TEMPLATE_ID"
+  # --cpu x86-64-v3 is set HERE, on the template, so every clone inherits it.
+  # The PVE default (qemu64) lacks AVX and bun-based binaries segfault at
+  # startup. Setting it per-clone means a future code path can forget it.
+  run qm create "$TEMPLATE_ID" \
+    --name "devbox-tmpl-trixie" \
+    --memory 4096 --cores 2 --cpu x86-64-v3 --numa 0 \
+    --net0 "virtio,bridge=${BRIDGE}${NET_VLAN_TAG:+,tag=$NET_VLAN_TAG}" \
+    --scsihw virtio-scsi-single \
+    --scsi0 "${STORAGE}:0,import-from=${IMAGE_PATH},discard=on,ssd=1,iothread=1" \
+    --ide2 "${STORAGE}:cloudinit" \
+    --boot order=scsi0 \
+    --serial0 socket --vga serial0 \
+    --agent enabled=1,fstrim_cloned_disks=1 \
+    --ostype l26
+
+  run qm template "$TEMPLATE_ID"
+  log "template $TEMPLATE_ID ready"
+}
+
 case "${1:-}" in
   preflight) ./scripts/preflight.sh ;;
   salvage)   shift; cmd_salvage "$@" ;;
+  template)  shift; cmd_template "$@" ;;
   *) echo "usage: $0 {preflight|salvage|template|render|create|rebuild}" >&2; exit 1 ;;
 esac
