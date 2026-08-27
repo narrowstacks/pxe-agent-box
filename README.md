@@ -59,7 +59,8 @@ same but skips unchanged files — prefer it once you start editing.)
 
 ```sh
 ssh root@<pve-host>
-cd /root/agent-box && ./scripts/build-template.sh
+cd /root/agent-box && chmod +x scripts/*.sh   # insurance if perms were lost in transit
+./scripts/build-template.sh
 ```
 
 Downloads Ubuntu 24.04 Server cloud image (~700 MB), creates VM 9000, converts
