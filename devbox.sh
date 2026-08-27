@@ -232,10 +232,96 @@ render_snippet() {
     }' "$tpl"
 }
 
+##### create #####
+
+ensure_data_mapping() {
+  run mkdir -p "$DATA_HOST_DIR"
+  run mkdir -p /etc/pve/mapping
+
+  if grep -q "^dir: ${DATA_MAP_ID}\$" /etc/pve/mapping/dir.cfg 2>/dev/null; then
+    return 0
+  fi
+
+  log "creating directory mapping '${DATA_MAP_ID}' -> ${DATA_HOST_DIR}"
+  if [[ "${DRYRUN:-0}" == "1" ]]; then
+    printf '  [dryrun] append dir mapping %s\n' "$DATA_MAP_ID"
+    return 0
+  fi
+  # The map line must be TAB-indented; PVE's parser rejects spaces.
+  printf '\ndir: %s\n\tmap node=%s,path=%s\n' \
+    "$DATA_MAP_ID" "$(hostname)" "$DATA_HOST_DIR" >>/etc/pve/mapping/dir.cfg
+}
+
+cmd_create() {
+  ./scripts/preflight.sh || fail "preflight failed"
+
+  qm status "$TEMPLATE_ID" >/dev/null 2>&1 \
+    || fail "template $TEMPLATE_ID does not exist; run './devbox.sh template' first"
+
+  qm status "$VMID" >/dev/null 2>&1 \
+    && fail "VMID $VMID already exists; use 'rebuild'"
+
+  ensure_data_mapping
+
+  local snippet_name="${VMNAME}.yaml"
+  local snippet_path
+  snippet_path="$(pvesm path "${SNIPPET_STORAGE}:snippets/${snippet_name}")"
+  [[ -d "$(dirname "$snippet_path")" ]] || run mkdir -p "$(dirname "$snippet_path")"
+
+  log "writing snippet ${SNIPPET_STORAGE}:snippets/${snippet_name}"
+  if [[ "${DRYRUN:-0}" == "1" ]]; then
+    render_snippet | sed 's/^/  [dryrun] /'
+  else
+    render_snippet > "$snippet_path"
+  fi
+
+  log "cloning ${TEMPLATE_ID} -> ${VMID}"
+  run qm clone "$TEMPLATE_ID" "$VMID" --name "$VMNAME" --full 1 --storage "$STORAGE"
+
+  # --balloon 0 is REQUIRED, not preferred: PVE refuses virtiofs on a VM with
+  # ballooning enabled. Do not "optimize" this back to a balloon value.
+  run qm set "$VMID" \
+    --cores "$VM_CORES" \
+    --memory "$VM_MEMORY_MB" --balloon 0 \
+    --cicustom "user=${SNIPPET_STORAGE}:snippets/${snippet_name}" \
+    --virtiofs0 "dirid=${DATA_MAP_ID},cache=always,expose-acl=1" \
+    --onboot 1 \
+    --tags dev
+
+  local ipconfig="ip=dhcp"
+  if [[ -n "$STATIC_IP" ]]; then
+    ipconfig="ip=${STATIC_IP}${GATEWAY:+,gw=$GATEWAY}"
+  fi
+  run qm set "$VMID" --ipconfig0 "$ipconfig"
+  [[ -z "$SEARCH_DOMAIN" ]] || run qm set "$VMID" --searchdomain "$SEARCH_DOMAIN"
+
+  # 'qm disk resize', not the legacy 'qm resize' alias, which mangles args.
+  run qm disk resize "$VMID" scsi0 "${VM_DISK_SIZE_GB}G"
+  run qm start "$VMID"
+
+  [[ "${DRYRUN:-0}" == "1" ]] && return 0
+
+  log "waiting for the guest agent to report an address"
+  local ip=""
+  for _ in $(seq 1 60); do
+    ip="$(guest_ip "$VMID")"
+    [[ -n "$ip" ]] && break
+    sleep 5
+  done
+
+  if [[ -n "$ip" ]]; then
+    log "box is up at ${ip}"
+    log "watch provisioning:  ssh ${ADMIN_USER}@${ip} tail -f /var/log/cloud-init-output.log"
+  else
+    warn "agent did not report an address in 5 minutes; check 'qm terminal ${VMID}'"
+  fi
+}
+
 case "${1:-}" in
   preflight) ./scripts/preflight.sh ;;
   salvage)   shift; cmd_salvage "$@" ;;
   template)  shift; cmd_template "$@" ;;
   render)    render_snippet ;;
+  create)    cmd_create ;;
   *) echo "usage: $0 {preflight|salvage|template|render|create|rebuild}" >&2; exit 1 ;;
 esac
