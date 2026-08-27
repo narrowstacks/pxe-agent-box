@@ -18,7 +18,7 @@ VM_DISK_SIZE="" # override VM_DISK_SIZE_GB from config.sh when set
 START_AFTER_CREATE=1
 
 while getopts "n:i:c:m:d:h" opt; do
-case "$opt" in
+  case "$opt" in
   n) VM_NAME="$OPTARG" ;;
   i) VM_ID="$OPTARG" ;;
   c) OPT_CORES="$OPTARG" ;;
@@ -162,7 +162,9 @@ qm clone "$TEMPLATE_ID" "$VM_ID" --name "$VM_NAME" --full 1
 DISK_GB="${VM_DISK_SIZE:-$VM_DISK_SIZE_GB}"
 log "applying sizing: ${VM_CORES} cores / ${VM_MEMORY_MB}MiB / ${DISK_GB}G disk"
 qm set "$VM_ID" --cores "$VM_CORES" --memory "$VM_MEMORY_MB" --balloon 2048
-qm resize "$VM_ID" scsi0 --size "${DISK_GB}G"
+# PVE 8.4: legacy 'qm resize' alias mangles args; use the full 'qm disk resize'
+# command with size as a positional argument.
+qm disk resize "$VM_ID" scsi0 "${DISK_GB}G"
 qm set "$VM_ID" --cicustom "user=${SNIPPET_STORAGE}:snippets/${SNIPPET_NAME}"
 
 if [[ -n "$SEARCH_DOMAIN" ]]; then
