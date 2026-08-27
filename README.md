@@ -5,8 +5,9 @@ A single, persistent Proxmox dev box for agent workflows.
 > **AI agent?** Read [AGENTS.md](AGENTS.md) instead, then
 > [docs/pitfalls.md](docs/pitfalls.md).
 
-One box: VMID 104, named `devbox`, Debian 13 (trixie). Build it once with
-`devbox.sh`, then `devbox.sh rebuild` destroys and recreates it in place. Auth,
+One box, running Debian 13 (trixie). Its id and name come from `VMID` and
+`VMNAME` in `config.sh`. Build it once with `devbox.sh`, then
+`devbox.sh rebuild` destroys and recreates it in place. Auth,
 dotfiles and tool config survive every rebuild. Working trees under `~/work` do
 not, and the rebuild gate exists to keep that safe.
 
@@ -66,6 +67,8 @@ What actually matters in `config.sh`:
   real RAM. `scripts/preflight.sh` checks memory fit before every `create`.
 - `DATA_HOST_DIR`: a plain directory on the PVE host that becomes `/data` in
   the guest over virtiofs. This is the box's only persistent volume.
+- `TEMPLATE_ID` / `VMID`: any two free VM ids. `preflight` warns if either is
+  already in use, and `create` refuses outright if `VMID` exists.
 
 ### 2. Copy to the Proxmox host
 
@@ -87,8 +90,8 @@ cd /root/agent-box && chmod +x devbox.sh scripts/*.sh
 
 `preflight` checks Proxmox version, virtiofsd, storage, memory headroom, VMID
 conflicts, SSH keys, and reachability of every third-party apt repo and the
-cloud image. `template` downloads the Debian 13 image and converts VM 9000 into
-a template. You repeat this only when Debian ships a new trixie image or you
+cloud image. `template` downloads the Debian 13 image and converts `TEMPLATE_ID`
+into a template. You repeat this only when Debian ships a new trixie image or you
 change infrastructure values.
 
 ### 4. Create the box
@@ -97,7 +100,7 @@ change infrastructure values.
 ./devbox.sh create
 ```
 
-Clones the template into VMID 104, mounts `/data`, boots, and prints the guest
+Clones the template into `VMID`, mounts `/data`, boots, and prints the guest
 IP once the QEMU guest agent reports one. The address comes from DHCP, so do
 not assume it is stable across rebuilds. `bootstrap.sh` then runs inside the
 guest for several minutes:
@@ -112,7 +115,7 @@ ssh dev@<ip> tail -f /var/log/cloud-init-output.log
 ./devbox.sh rebuild
 ```
 
-Destroys VMID 104 and recreates it from the template. `/data` is untouched.
+Destroys the box and recreates it from the template. `/data` is untouched.
 Before destroying anything, `rebuild`:
 
 1. Refuses if `~/work` has uncommitted changes, unpushed commits, non-git
@@ -213,7 +216,7 @@ untouched. The next `rebuild` picks it up.
 `ssh dev@<ip> tail -50 /var/log/cloud-init-output.log`. Since `bootstrap.sh` is
 idempotent, re-running it as `sudo devbox-bootstrap` is usually enough. Reach
 for `rebuild` only if the box is unrecoverable. Emergency console:
-`qm terminal 104` on the host.
+`qm terminal <vmid>` on the host.
 
 **Where is the cloud-init snippet?**
 `${SNIPPET_STORAGE}:snippets/devbox.yaml`, regenerated from

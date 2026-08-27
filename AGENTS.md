@@ -14,7 +14,8 @@ Proxmox VE tooling for a single persistent Linux dev box.
   `preflight`, `salvage`, `template`, `render`, `create`, `rebuild`.
 - **`bootstrap.sh`** runs inside the guest, is idempotent, and converges the
   box on first boot and on every re-run afterward.
-- One box: VMID 104, named `devbox`, Debian 13 (trixie).
+- One box, Debian 13 (trixie). Its id and name come from `VMID` and `VMNAME`
+  in `config.sh`; nothing should assume a particular value.
 - `/data` is a virtiofs volume backed by `DATA_HOST_DIR` on the host. Auth
   state, dotfiles and tool config live there and survive rebuilds. `~/work`
   lives on the VM disk and does not.
@@ -24,7 +25,7 @@ Proxmox VE tooling for a single persistent Linux dev box.
 | Ask | What it means |
 | --- | --- |
 | "build it for the first time" | `./devbox.sh template` then `./devbox.sh create`, from `/root/agent-box` on the PVE host. `create` runs `preflight` itself. |
-| "rebuild it" / "give me a clean box" | `./devbox.sh rebuild`. Destroys and recreates VMID 104. `/data` is untouched. |
+| "rebuild it" / "give me a clean box" | `./devbox.sh rebuild`. Destroys and recreates the box at `VMID`. `/data` is untouched. |
 | "something's broken on the box" | Almost always an edit to `bootstrap.sh` re-run in place, **not** a rebuild. |
 
 ## Iterate on `bootstrap.sh` in place
