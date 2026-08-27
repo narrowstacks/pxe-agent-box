@@ -86,7 +86,11 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 fail=0
-mapfile -t files < <(git ls-files '*.sh')
+# --others --exclude-standard also lists NEW files that are not yet staged.
+# Without them the gate silently skips the file you are currently writing and
+# reports clean, which is how a lint failure once shipped in a commit that
+# claimed lint passed.
+mapfile -t files < <(git ls-files --cached --others --exclude-standard '*.sh')
 
 for f in "${files[@]}"; do
   if ! bash -n "$f"; then
@@ -1437,7 +1441,7 @@ remote 'test -s ~/.ssh/authorized_keys && test "$(stat -c %a ~/.ssh/authorized_k
 check "authorized_keys is non-empty and mode 600" $?
 
 remote '! test -L ~/.ssh'
-check "~/.ssh is a real directory, not a symlink" $?
+check "the admin user's .ssh is a real directory, not a symlink" $?
 
 remote 'sudo -n true'
 check "sudo is NOPASSWD" $?
@@ -1467,7 +1471,7 @@ printf '\n\033[1;34m== state persistence ==\033[0m\n'
 
 for p in .claude .claude.json .config/gh .config/herdr .config/mise .gitconfig; do
   remote "test -L ~/$p && readlink -f ~/$p | grep -q '^/data/'"
-  check "~/$p is a symlink into /data" $?
+  check "$p is a symlink into /data" $?
 done
 
 printf '\n\033[1;34m== %d passed, %d failed ==\033[0m\n' "$pass" "$fail"
