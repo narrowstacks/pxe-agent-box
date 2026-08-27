@@ -187,5 +187,38 @@ check "herdr reports at least one session" $?
 remote 'test -d ~/.config/moshi'
 check "moshi state directory exists at ~/.config/moshi" $?
 
+# Runs last because it is slow: a full re-convergence, not a single probe.
+# Default is to run it. SKIP_SLOW is an opt-out for fast iteration, not an
+# opt-in, because a check nobody runs by default is a check that silently
+# stops existing.
+if [[ "${SKIP_SLOW:-0}" != "1" ]]; then
+  printf '\n\033[1;34m== idempotency ==\033[0m\n'
+  # A qemu-ga restart once orphaned half a run and a second instance raced
+  # dpkg locks, killing both. Re-running end to end must be a genuine no-op.
+  remote 'sudo /usr/local/sbin/devbox-bootstrap >/tmp/rerun.log 2>&1'
+  check "devbox-bootstrap re-runs clean end to end" $?
+
+  # bootstrap.sh's fail() writes "ERROR:" behind a raw ANSI color escape
+  # (printf '\033[1;31mERROR:...'), so a plain "^ERROR" anchor never matches
+  # the bytes actually in the log; strip escapes first, then anchor.
+  #
+  # WARNING lines are deliberately NOT asserted to be zero. bootstrap.sh
+  # warns and continues for a known list of optional tools (opencode, codex,
+  # pi, pnpm, uv, chrome, moshi-hook, mise reshim, ...), and it retries those
+  # installs unconditionally on every run, so a transient warning on a
+  # re-run is not proof the re-run was non-idempotent. What is provable: the
+  # run exited 0, and it logged nothing through the ERROR path. Warnings are
+  # still surfaced below, uncounted, so a human can eyeball them.
+  remote 'sed -E "s/\x1b\[[0-9;]*m//g" /tmp/rerun.log > /tmp/rerun.clean.log'
+  remote '! grep -q "^ERROR:" /tmp/rerun.clean.log'
+  check "the re-run logged no errors" $?
+
+  warnings="$(remote 'grep "^WARNING:" /tmp/rerun.clean.log' 2>/dev/null || true)"
+  if [[ -n "$warnings" ]]; then
+    printf '  \033[1;33minfo\033[0m re-run logged warnings (not a failure, optional tools only):\n'
+    printf '    %s\n' "$warnings"
+  fi
+fi
+
 printf '\n\033[1;34m== %d passed, %d failed ==\033[0m\n' "$pass" "$fail"
 [[ $fail -eq 0 ]]
