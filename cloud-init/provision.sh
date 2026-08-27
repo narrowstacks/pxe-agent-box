@@ -346,10 +346,12 @@ command -v starship >/dev/null 2>&1 && eval "$(starship init zsh)"
 reload() { exec zsh; }
 ZRC
 else
-  # herdr (or another tool) owns this .zshrc — just make sure ~/.local/bin is on PATH
-  # so user-local binaries (starship, claude) resolve in every pane.
+  # herdr (or another tool) owns this .zshrc — make sure ~/.local/bin is on PATH
+  # and that its 'prompt adam1' template doesn't fight starship: adam1 registers
+  # a precmd that re-asserts the old prompt on every render, stomping starship.
   grep -q '.local/bin' "$HOME/.zshrc" || \
     sed -i '1i # agent-box: user-local bins\nexport PATH="$HOME/.local/bin:$PATH"' "$HOME/.zshrc"
+  sed -i '/^autoload -Uz promptinit$/d; /^promptinit$/d; /^prompt adam1$/d' "$HOME/.zshrc"
 fi
 ZSHRC
 
