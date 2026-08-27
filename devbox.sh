@@ -326,19 +326,29 @@ cmd_create() {
 # ~/work lives on the VM disk, not on /data, so a rebuild destroys it. Refuse
 # unless every repo is clean AND pushed. This gate is the reason the
 # state-only persistence split is safe.
+#
+# The host cannot ssh to the guest: /root/.ssh on the PVE host holds only
+# the PUBLIC keys baked into boxes, no matching private key. So this and
+# snapshot_work use 'qm guest exec' (already used by cmd_salvage, needs no
+# credentials) plus the /data virtiofs share, which the host and guest both
+# see as the same directory with no transfer needed. Per this project's
+# incident ledger, a script is always pushed to a file and executed, never
+# inlined as a one-liner, because nested quoting through guest exec is a
+# known footgun.
 assert_work_tree_clean() {
-  local ip="$1"
   log "checking ~/work for unsaved state"
 
-  local dirty
-  dirty="$(ssh -o BatchMode=yes "${ADMIN_USER}@${ip}" 'bash -s' <<'EOF'
+  local check_script="${DATA_HOST_DIR}/.devbox-workcheck.sh"
+  {
+    printf 'work="/home/%s/work"\n' "$ADMIN_USER"
+    cat <<'EOF'
 set -uo pipefail
 shopt -s nullglob dotglob
-if [[ ! -d "$HOME/work" ]]; then
+if [[ ! -d "$work" ]]; then
   echo "work directory missing: cannot verify, refusing to guess"
   exit 0
 fi
-for d in "$HOME"/work/*; do
+for d in "$work"/*; do
   name="$(basename "$d")"
   if [[ -d "$d/.git" ]]; then
     if [[ -n "$(git -C "$d" status --porcelain 2>/dev/null)" ]]; then
@@ -359,7 +369,33 @@ for d in "$HOME"/work/*; do
   fi
 done
 EOF
-)"
+  } > "$check_script"
+
+  # Run as ADMIN_USER, not root: guest exec runs as root by default, and
+  # git refuses to touch a repo it does not own ("dubious ownership"),
+  # which would make the gate report failures that are not real.
+  local raw rc
+  raw="$(qm guest exec "$VMID" --timeout 60 -- /bin/sh -c \
+    "su -s /bin/bash - '${ADMIN_USER}' -c 'bash /data/.devbox-workcheck.sh'" 2>/dev/null)" && rc=0 || rc=$?
+  rm -f "$check_script"
+
+  [[ $rc -eq 0 ]] || fail "cannot reach the guest agent to check ~/work; pass --force to rebuild anyway"
+
+  # A gate that cannot verify must refuse, never pass: any missing/odd
+  # field, a timed-out command ("exited" absent or 0), or a nonzero
+  # exitcode all fall through to the except and abort via SystemExit(1),
+  # which the '||' below turns into a refusal.
+  local dirty
+  dirty="$(printf '%s' "$raw" | python3 -c 'import json, sys
+try:
+    d = json.load(sys.stdin)
+    if d.get("exited") != 1 or d.get("exitcode", 1) != 0:
+        raise ValueError("guest command did not exit cleanly: %r" % d)
+except Exception as exc:
+    print("workcheck failed: %s" % exc, file=sys.stderr)
+    raise SystemExit(1)
+sys.stdout.write(d.get("out-data", ""))')" \
+    || fail "guest check script did not run cleanly; pass --force to rebuild anyway"
 
   [[ -z "$dirty" ]] && { log "work tree is clean"; return 0; }
 
@@ -370,18 +406,32 @@ EOF
 }
 
 snapshot_work() {
-  local ip="$1"
   local stamp
   stamp="$(date -u +%Y%m%dT%H%M%SZ)"
   run mkdir -p "${DATA_HOST_DIR}/work-snapshots"
   log "snapshotting ~/work to ${DATA_HOST_DIR}/work-snapshots/${stamp}.tar.zst"
 
   # Belt and braces behind the gate, not the primary mechanism. Excludes the
-  # regenerable directories so the tarball stays small.
-  ssh -o BatchMode=yes "${ADMIN_USER}@${ip}" \
-    "tar -C \"\$HOME\" --exclude=node_modules --exclude=.venv --exclude=target --exclude=dist -cf - work 2>/dev/null | zstd -q -T0" \
-    > "${DATA_HOST_DIR}/work-snapshots/${stamp}.tar.zst" \
-    || warn "work snapshot failed; continuing because the clean-tree gate already passed"
+  # regenerable directories so the tarball stays small. Written straight to
+  # /data by the guest itself, no host-guest transfer needed.
+  local snap_script="${DATA_HOST_DIR}/.devbox-snapshot.sh"
+  cat > "$snap_script" <<EOF
+tar -C "/home/${ADMIN_USER}" --exclude=node_modules --exclude=.venv --exclude=target --exclude=dist -cf - work | zstd -q -T0 -o "/data/work-snapshots/${stamp}.tar.zst"
+EOF
+
+  # Runs as root (guest exec's default): tar/zstd do not care about
+  # ownership the way git does, so no su is needed here.
+  local raw rc
+  raw="$(qm guest exec "$VMID" --timeout 120 -- /bin/sh -c "bash /data/.devbox-snapshot.sh" 2>/dev/null)" && rc=0 || rc=$?
+  rm -f "$snap_script"
+
+  if [[ $rc -eq 0 ]] && printf '%s' "$raw" | python3 -c 'import json, sys
+d = json.load(sys.stdin)
+sys.exit(0 if d.get("exited") == 1 and d.get("exitcode", 1) == 0 else 1)' 2>/dev/null; then
+    run chown 1000:1000 "${DATA_HOST_DIR}/work-snapshots/${stamp}.tar.zst"
+  else
+    warn "work snapshot failed; continuing because the clean-tree gate already passed"
+  fi
 
   # Keep the last three.
   local old
@@ -396,13 +446,15 @@ cmd_rebuild() {
 
   qm status "$VMID" >/dev/null 2>&1 || fail "VMID $VMID does not exist; use 'create'"
 
+  # Reported for the operator's benefit only; the checks below go through
+  # 'qm guest exec', not ssh, so this address is not otherwise used.
   local ip
   ip="$(guest_ip "$VMID")"
+  log "current guest address: ${ip:-unknown}"
 
   if [[ "$force" != "--force" ]]; then
-    [[ -n "$ip" ]] || fail "cannot reach the guest to check ~/work; pass --force to rebuild anyway"
-    assert_work_tree_clean "$ip"
-    snapshot_work "$ip"
+    assert_work_tree_clean
+    snapshot_work
   fi
 
   log "rebuilding ${VMID}. ${DATA_HOST_DIR} on the host is NOT touched."
