@@ -403,27 +403,19 @@ mkdir -p /var/lib/agent-box
   fi
   printf 'bun_outdated=%s\n' "$bun_outdated"
 
-  # effective python-outdated set = system-env entries the user hasn't
-  # superseded, plus the user's own outdated --user packages. Names are
-  # normalized (lowercase) because pip spellings vary (PyYAML vs pyyaml).
-  sys_out=$(mktemp) user_has=$(mktemp) user_out=$(mktemp)
-  if command -v pip3 >/dev/null; then
-    pip3 list --outdated --disable-pip-version-check 2>/dev/null |
-      tail -n +3 | awk '{print tolower($1)}' >"$sys_out" || true
-  fi
+  # Effective python-outdated = packages the admin user can actually act on:
+  # their ~/.local (--user) env, plus pip itself. Distro-owned system packages
+  # (Twisted, cloud-init deps…) are apt's business — counting them as "pip
+  # outdated" produced 45 lines of noise the user cannot fix via pip.
+  ADMIN_USER_="${ADMIN_USER:-dev}"
+  ADMIN_HOME="$(getent passwd "$ADMIN_USER_" | cut -d: -f6)"
+
+  pip_outdated=0
   if [[ -n "$ADMIN_HOME" ]] && ls "${ADMIN_HOME}"/.local/lib/python3*/site-packages >/dev/null 2>&1; then
-    # names the user env already owns (up-to-date or outdated): these supersede
-    { su -s /bin/bash "$ADMIN_USER_" -c \
-        'pip3 list --user --format=freeze 2>/dev/null' | cut -d= -f1
-      su -s /bin/bash "$ADMIN_USER_" -c \
-        'pip3 list --outdated --user --disable-pip-version-check 2>/dev/null' | tail -n +3 | awk '{print $1}'
-    } | tr 'A-Z' 'a-z' | sort -u >"$user_has"
-    su -s /bin/bash "$ADMIN_USER_" -c \
+    pip_outdated=$(su -s /bin/bash "$ADMIN_USER_" -c \
       'pip3 list --outdated --user --disable-pip-version-check 2>/dev/null' \
-      | tail -n +3 | awk '{print tolower($1)}' >"$user_out" || true
+      | tail -n +3 | grep -c . || true)
   fi
-  pip_outdated=$( { grep -vxFf "$user_has" "$sys_out"; cat "$user_out"; } | sort -u | grep -c . || true )
-  rm -f "$sys_out" "$user_has" "$user_out"
   printf 'pip_outdated=%s\n' "$pip_outdated"
 
   # bun self-updates outside npm; compare against the latest GitHub release.
@@ -546,7 +538,7 @@ if [[ -r /var/lib/agent-box/apt-status ]]; then
         "$npm_outdated" "$( ((npm_outdated == 1)) || echo s )"
     fi
     if ((pip_outdated > 0)); then
-      printf " ${dim}%s python package%s outdated${off} — pip3 list --outdated; pip3 install -U --user <name>\n" \
+      printf " ${dim}%s user python package%s outdated${off} — pip3 list --outdated --user; pip3 install --user --break-system-packages -U <name>\n" \
         "$pip_outdated" "$( ((pip_outdated == 1)) || echo s )"
     fi
     if ((bun_outdated > 0)); then
