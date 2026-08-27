@@ -248,16 +248,42 @@ which xvfb-run || log "WARNING: xvfb missing — headed chrome unavailable"
 log "apt status refresh timer (keeps the login banner's update info fresh)"
 cat >/usr/local/bin/agent-box-apt-status <<'EOF'
 #!/usr/bin/env bash
-# Refreshes pending-apt-update counts for the login banner.
-# Invoked by agent-box-apt-status.timer, never at login time.
+# Refreshes pending-update counts (apt + language ecosystems) for the login
+# banner. Invoked by agent-box-apt-status.timer, never at login time.
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 updates=$(apt list --upgradable 2>/dev/null | grep -vc '^Listing' || true)
 security=$(apt-get -s dist-upgrade 2>/dev/null | grep -ci '^Inst .*secur' || true)
 mkdir -p /var/lib/agent-box
-printf 'updates=%s\nsecurity=%s\nts=%s\n' \
-  "$updates" "$security" "$(date +%s)" >/var/lib/agent-box/apt-status
+{
+  printf 'updates=%s\nsecurity=%s\n' "$updates" "$security"
+
+  # npm -g covers everything npm-installed: pnpm, opencode, pi, codex, tsx…
+  # (--parseable = one line per package, machine-countable)
+  npm_outdated=0
+  command -v npm >/dev/null && \
+    npm_outdated=$(npm outdated -g --parseable 2>/dev/null | grep -c . || true)
+  printf 'npm_outdated=%s\n' "$npm_outdated"
+
+  # distro-python packages (PEP 668 env); output = 2 header rows then results
+  pip_outdated=0
+  command -v pip3 >/dev/null && \
+    pip_outdated=$(pip3 list --outdated --disable-pip-version-check 2>/dev/null |
+      tail -n +3 | grep -c . || true)
+  printf 'pip_outdated=%s\n' "$pip_outdated"
+
+  # bun self-updates outside npm; compare against the latest GitHub release.
+  # Best-effort: rate limits or network hiccups just leave the prompt away.
+  bun_cur=$(bun --version 2>/dev/null || true)
+  bun_new=""
+  [[ -n "$bun_cur" ]] && bun_new=$(curl -fsSL --max-time 20 \
+    https://api.github.com/repos/oven-sh/bun/releases/latest |
+    jq -r '.tag_name' 2>/dev/null | sed 's/^bun//' || true)
+  printf 'bun_cur=%s\nbun_new=%s\n' "$bun_cur" "$bun_new"
+
+  printf 'ts=%s\n' "$(date +%s)"
+} >/var/lib/agent-box/apt-status
 EOF
 chmod 755 /usr/local/bin/agent-box-apt-status
 cat >/etc/systemd/system/agent-box-apt-status.service <<'EOF'
@@ -355,6 +381,24 @@ if [[ -r /var/lib/agent-box/apt-status ]]; then
       printf " ${green}packages up to date${off}\n"
     fi
     [[ -e /var/run/reboot-required ]] && printf " ${yellow}reboot required to finish updating${off}\n"
+  fi
+fi
+
+if [[ -r /var/lib/agent-box/apt-status ]]; then
+  npm_outdated=0 pip_outdated=0 bun_cur='' bun_new=''
+  . /var/lib/agent-box/apt-status 2>/dev/null || true
+  if (( $(date +%s) - ts < 172800 )); then
+    if ((npm_outdated > 0)); then
+      printf " ${dim}%s global npm package%s outdated${off} — npm outdated -g; npm i -g <name>@latest\n" \
+        "$npm_outdated" "$( ((npm_outdated == 1)) || echo s )"
+    fi
+    if ((pip_outdated > 0)); then
+      printf " ${dim}%s python package%s outdated${off} — pip3 list --outdated; pip3 install -U <name>\n" \
+        "$pip_outdated" "$( ((pip_outdated == 1)) || echo s )"
+    fi
+    if [[ -n "$bun_cur" && -n "$bun_new" && "$bun_cur" != "$bun_new" ]]; then
+      printf " ${dim}bun %s available (%s installed)${off} — bun upgrade\n" "$bun_new" "$bun_cur"
+    fi
   fi
 fi
 EOF
