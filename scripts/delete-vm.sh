@@ -38,10 +38,14 @@ for cmd in qm pvesm; do command -v "$cmd" >/dev/null || fail "missing: $cmd"; do
 if qm status "$TARGET" >/dev/null 2>&1; then
   VM_ID="$TARGET"
 else
-  # resolve name -> id via cluster resources
+  # resolve name -> id via cluster resources (proper JSON parse, not grep)
   VM_ID="$(pvesh get /cluster/resources --type vm --output-format json 2>/dev/null |
-    grep -B4 "\"name\": *\"${TARGET}\"" |
-    grep -oP '(?<="vmid": )\d+' | head -n1 || true)"
+    python3 -c "
+import json, sys
+name = '$TARGET'.replace(\"'\", \"\")
+ids = [v['vmid'] for v in json.load(sys.stdin) if v.get('name') == name]
+print(ids[0] if ids else '')
+" || true)"
 fi
 [[ -n "${VM_ID:-}" ]] && qm status "$VM_ID" >/dev/null 2>&1 || fail "no VM matching '${TARGET}'"
 
