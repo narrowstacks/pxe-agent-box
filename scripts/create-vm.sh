@@ -93,17 +93,9 @@ printf 'ADMIN_USER=%s\nNODE_MAJOR=%s\nSWAP_SIZE_GB=%s\nENABLE_UFW=%s\n' \
 
 provision_b64="$(base64 -w0 "$REPO_ROOT/cloud-init/provision.sh")"
 
-if [[ -n "$STATIC_IP" ]]; then
-  NET_SECTION="      addresses: [${STATIC_IP}]"
-else
-  NET_SECTION="      dhcp4: true"
-fi
-if [[ -n "$GATEWAY" ]]; then
-  NET_SECTION="${NET_SECTION}
-      routes:
-        - to: default
-          via: ${GATEWAY}"
-fi
+# Network is configured by PVE itself via --ipconfig0 (applied to the clone
+# below), NOT via a `network:` key in user-data — modern cloud-init rejects
+# that key (schema validation failure) and the guest ends up with no NIC.
 
 SNIPPET_NAME="${VM_NAME}-${VM_ID}.yml"
 SNIPPET_PATH="$(pvesm path "${SNIPPET_STORAGE}:snippets/${SNIPPET_NAME}")"
@@ -128,15 +120,6 @@ users:
     sudo: ALL=(ALL) NOPASSWD:ALL
     lock_passwd: true
 
-network:
-  version: 2
-  ethernets:
-    nic0:
-      match:
-        name: "en*"
-      set-name: nic0
-${NET_SECTION}
-
 write_files:
   - path: /etc/agent-box.env
     permissions: '0644'
@@ -148,7 +131,8 @@ $(sed 's/^/      /' "$env_content")
     content: ${provision_b64}
 
 runcmd:
-  - sh /opt/agent-box/provision.sh 2>&1 | tee /dev/ttyS0
+  # bash, not sh — provision.sh uses bashisms (pipefail); dash dies on line 11
+  - bash /opt/agent-box/provision.sh 2>&1 | tee /dev/ttyS0
 YAML
 
 chmod 644 "$SNIPPET_PATH"
@@ -166,6 +150,16 @@ qm set "$VM_ID" --cores "$VM_CORES" --memory "$VM_MEMORY_MB" --balloon 2048
 # command with size as a positional argument.
 qm disk resize "$VM_ID" scsi0 "${DISK_GB}G"
 qm set "$VM_ID" --cicustom "user=${SNIPPET_STORAGE}:snippets/${SNIPPET_NAME}"
+
+# Guest networking via PVE's native mechanism (cloud-init consumes this into
+# its network-config). DHCP by default; STATIC_IP/GATEWAY override.
+if [[ -n "$STATIC_IP" ]]; then
+  IPCONFIG0="ip=${STATIC_IP}"
+  [[ -n "$GATEWAY" ]] && IPCONFIG0="ip=${STATIC_IP},gw=${GATEWAY}"
+else
+  IPCONFIG0="ip=dhcp"
+fi
+qm set "$VM_ID" --ipconfig0 "$IPCONFIG0"
 
 if [[ -n "$SEARCH_DOMAIN" ]]; then
   qm set "$VM_ID" --searchdomain "$SEARCH_DOMAIN"
