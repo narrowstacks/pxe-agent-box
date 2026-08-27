@@ -208,6 +208,51 @@ MOSHIUNIT
     log "WARNING: moshi-hook claude hooks not installed (claude may not be present yet)"
 fi
 
+# Pre-start the default herdr session so Moshi's session picker shows a
+# workspace on first connect (it only lists RUNNING sessions; a fresh box
+# would otherwise show nothing until someone runs `herdr` once). herdr's TUI
+# needs a tty even when the client just daemonizes the session, so script(1)
+# provides one. Type=simple: the script/herdr-client process stays attached
+# to the session (unlike tmux's detach-and-exit), so forking detection would
+# time out — the unit IS the session holder.
+sudo -iu "$ADMIN_USER" bash -s <<'HERDRUNIT'
+mkdir -p "$HOME/.config/systemd/user"
+cat > "$HOME/.config/systemd/user/herdr-session.service" <<'UNIT'
+[Unit]
+Description=herdr default session (pre-started for Moshi)
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/script -qec /usr/local/bin/herdr /dev/null
+Restart=on-failure
+RestartSec=10
+StandardOutput=null
+StandardError=null
+
+[Install]
+WantedBy=default.target
+UNIT
+systemctl --user daemon-reload
+systemctl --user enable --now herdr-session.service
+HERDRUNIT
+
+# Seed the herdr config in one write: --default-config plus the theme keys
+# set (appending a second [theme] table makes the TOML invalid — duplicate
+# key — so patch the uncommented defaults instead of adding a block).
+sudo -iu "$ADMIN_USER" bash -s <<'HERDRCONF'
+conf="$HOME/.config/herdr/config.toml"
+if [[ ! -f "$conf" ]]; then
+  mkdir -p "$(dirname "$conf")"
+  herdr --default-config > "$conf"
+  sed -i \
+    -e 's|^# name = "catppuccin"|name = "catppuccin"|' \
+    -e 's|^# auto_switch = false|auto_switch = true|' \
+    -e 's|^# dark_name = "catppuccin"|dark_name = "catppuccin"|' \
+    -e 's|^# light_name = "catppuccin-latte"|light_name = "catppuccin-latte"|' \
+    "$conf"
+fi
+HERDRCONF
+
 log "allowing ${ADMIN_USER}'s user daemons (herdr/moshi-hook) to run without an active login session"
 loginctl enable-linger "$ADMIN_USER" 2>/dev/null || true
 
