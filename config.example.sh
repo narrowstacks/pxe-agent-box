@@ -45,8 +45,11 @@ ADMIN_USER="dev"
 GUEST_TIMEZONE="America/Los_Angeles"
 
 # One or more files with SSH public keys, whitespace separated.
+# IMPORTANT: resolved on the machine where create-vm.sh runs (the PVE host).
+# Use absolute paths to avoid $HOME surprises; copy keys there if needed:
+#   scp ~/.ssh/id_ed25519.pub root@pve:/root/.ssh/
 # Each key gets full sudo + docker access on the box.
-SSH_KEY_FILES="$HOME/.ssh/id_ed25519.pub $HOME/.ssh/id_rsa.pub"
+SSH_KEY_FILES="/root/.ssh/id_ed25519.pub"
 # Non-existent entries in the list above are ignored; keep at least one real one.
 
 ##### Provisioning knobs (applied inside the guest) #####
