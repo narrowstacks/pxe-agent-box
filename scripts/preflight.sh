@@ -61,14 +61,19 @@ done
 
 log "third-party apt repos for trixie"
 check_repo() {  # check_repo <label> <url>
-  if curl -fsSI --max-time 10 "$2" >/dev/null 2>&1; then ok "$1"; else bad "$1 unreachable: $2"; fi
+  # GET, not HEAD: some endpoints reject HEAD while serving fine over GET.
+  # -L to follow redirects: without it a 3xx returns 0 and the check passes
+  # without ever confirming the target serves the file.
+  if curl -fsSL -o /dev/null --max-time 15 "$2"; then ok "$1"; else bad "$1 unreachable: $2"; fi
 }
 check_repo "docker trixie"    "https://download.docker.com/linux/debian/dists/trixie/Release"
 check_repo "tailscale trixie" "https://pkgs.tailscale.com/stable/debian/dists/trixie/Release"
 check_repo "github cli"       "https://cli.github.com/packages/dists/stable/Release"
 check_repo "claude-code"      "https://downloads.claude.ai/claude-code/apt/stable/dists/stable/Release"
 check_repo "google chrome"    "https://dl.google.com/linux/chrome/deb/dists/stable/Release"
-check_repo "debian image"     "$CLOUD_IMAGE_URL"
+# Range request for debian image to avoid downloading 350 MB qcow2 file.
+# Only fetches first byte, proving the URL serves content.
+if curl -fsSL -o /dev/null --max-time 15 -r 0-0 "$CLOUD_IMAGE_URL"; then ok "debian image"; else bad "debian image unreachable: $CLOUD_IMAGE_URL"; fi
 
 log "data volume"
 df -h "$(dirname "$DATA_HOST_DIR")" | tail -1
