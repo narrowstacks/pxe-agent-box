@@ -16,9 +16,9 @@ set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
-# DEVBOX_CONFIG lets tests point at a fixture config. Without it, sourcing
-# the real config.sh would clobber any environment the caller set, and
-# tests/test-render.sh could never run on a machine without /root/.ssh.
+# DEVBOX_CONFIG points tests at a fixture config. Sourcing the real
+# config.sh would clobber whatever the caller exported, so tests could not
+# run on a machine without /root/.ssh.
 CONFIG_FILE="${DEVBOX_CONFIG:-./config.sh}"
 [[ -r "$CONFIG_FILE" ]] || {
   echo "ERROR: $CONFIG_FILE not found. Copy config.example.sh to config.sh and edit it." >&2
@@ -55,10 +55,10 @@ run() {
 
 ##### salvage #####
 
-# Auth state worth carrying off the old box. Source paths are relative to the
-# admin user's home; destinations are relative to $DATA_HOST_DIR/state.
-# Deliberately excludes ~/.omp (starship is the sole prompt owner now) and
-# the mise tree (toolchains are reinstalled from the manifest on rebuild).
+# Auth state worth carrying off the old box. Sources are relative to the
+# admin user's home, destinations to $DATA_HOST_DIR/state. Excludes ~/.omp
+# (starship owns the prompt) and the mise tree (toolchains are reinstalled
+# from the manifest).
 SALVAGE_MAP=(
   ".claude:claude"
   ".claude.json:claude.json"
@@ -70,11 +70,10 @@ SALVAGE_MAP=(
 )
 
 cmd_salvage() {
-  # No default. A bare 'devbox.sh salvage' used to fall back to $VMID, the
-  # live box: that tars its own state out and then, below, rm -rf's and
-  # mv's onto the very paths ~/.claude and ~/.config/gh are symlinked to,
-  # while the box is running and virtiofs is cache=always. Both the missing
-  # argument and the live-VMID case must refuse before touching anything.
+  # No default vmid. Salvaging the live box would rm -rf and overwrite, under
+  # a running cache=always mount, the very paths its own ~/.claude and
+  # ~/.config/gh are symlinked to. Both cases refuse before touching
+  # anything.
   [[ $# -ge 1 ]] || fail "usage: devbox.sh salvage <vmid>  (no default; salvage requires an explicit SOURCE vmid, distinct from the live \$VMID in config.sh)"
   local src_vmid="$1"
   [[ "$src_vmid" != "$VMID" ]] \
@@ -93,8 +92,7 @@ cmd_salvage() {
     dst="${dest}/${entry##*:}"
 
     # qm guest exec cannot stream files, so tar through base64 over the agent.
-    # Nested quoting through guest exec is a known footgun; keep the guest-side
-    # command a single flat sh -c string with no embedded newlines.
+    # Keep the guest-side command one flat sh -c string with no newlines.
     if ! qm guest exec "$src_vmid" -- /bin/sh -c "test -e '$src'" >/dev/null 2>&1; then
       printf '  skip   %s (absent)\n' "$src"
       continue
@@ -105,11 +103,9 @@ cmd_salvage() {
       continue
     fi
 
-    # A single entry failing must not abort the salvage. The closing chown
-    # would be skipped and everything already extracted would stay
-    # root-owned, which is broken state for a volume the guest reads as
-    # uid 1000. Warn and continue, matching how optional steps behave
-    # elsewhere in this project.
+    # Warn and continue: aborting here would skip the chown below and leave
+    # what was already extracted root-owned on a volume the guest reads as
+    # uid 1000.
     if ! qm guest exec "$src_vmid" --timeout 120 -- /bin/sh -c \
         "tar -C '$(dirname "$src")' -cf - '$(basename "$src")' | base64 -w0" \
       | python3 -c 'import json, sys, base64
@@ -152,18 +148,17 @@ cmd_template() {
 
   if [[ ! -f "$IMAGE_PATH" ]]; then
     log "downloading $(basename "$CLOUD_IMAGE_URL")"
-    # Download to a temp name and rename only on success. wget writes
-    # partial bytes straight to its target, so a failed download would
-    # leave a truncated file that the next run's -f test accepts as
-    # valid, feeding a corrupt image to 'qm create --import-from'.
+    # Temp name plus rename on success. wget writes partial bytes straight
+    # to its target, so a failed download would leave a truncated file that
+    # the -f test above accepts and --import-from then reads.
     run wget -qO "${IMAGE_PATH}.partial" "$CLOUD_IMAGE_URL"
     run mv "${IMAGE_PATH}.partial" "$IMAGE_PATH"
   fi
 
   log "creating template $TEMPLATE_ID"
-  # --cpu x86-64-v3 is set HERE, on the template, so every clone inherits it.
-  # The PVE default (qemu64) lacks AVX and bun-based binaries segfault at
-  # startup. Setting it per-clone means a future code path can forget it.
+  # --cpu x86-64-v3 on the template, so every clone inherits it and no future
+  # code path can forget it. The PVE default (qemu64) lacks AVX2 and
+  # bun-based binaries segfault at startup.
   run qm create "$TEMPLATE_ID" \
     --name "devbox-tmpl-trixie" \
     --memory 4096 --cores 2 --cpu x86-64-v3 --numa 0 \
@@ -199,12 +194,10 @@ render_snippet() {
   [[ -n "$keys" ]] || fail "no SSH keys resolved from SSH_KEY_FILES"
   keys="${keys%$'\n'}"
 
-  # Values reach awk through ENVIRON, never through -v: POSIX lexes -v
-  # assignments as string literals, so a value containing a literal
-  # backslash-n becomes a REAL newline and injects a sibling YAML key.
-  # Substitution is literal index/substr rather than gsub, because gsub
-  # treats & in the replacement as "the matched text". Neither construct
-  # processes escapes, so values pass through as bytes.
+  # ENVIRON, never -v: awk processes escapes in a -v assignment, so a literal
+  # backslash-n in a value becomes a real newline and injects a sibling YAML
+  # key. index/substr rather than gsub, whose replacement treats & as the
+  # matched text. Neither processes escapes, so values pass through as bytes.
   DEVBOX_VMNAME="$VMNAME" \
   DEVBOX_ADMIN_USER="$ADMIN_USER" \
   DEVBOX_TZ="$GUEST_TIMEZONE" \
@@ -246,20 +239,18 @@ render_snippet() {
 ensure_data_mapping() {
   run mkdir -p "$DATA_HOST_DIR"
 
-  # Register through PVE's API, never by hand-writing the config. The
-  # mapping lives in /etc/pve/mapping/directory.cfg (NOT dir.cfg) and its
-  # format carries no "dir:" section prefix, so a hand-written file is
-  # silently ignored: pvesh reports nothing and qm start fails with
-  # "Directory ID <id> does not exist". Letting the API own the format
-  # means a future PVE release changing it does not break us.
+  # Register through the API, never by hand-writing
+  # /etc/pve/mapping/directory.cfg: its format carries no "dir:" section
+  # prefix, and a hand-written file is silently ignored. Letting the API own
+  # the format also survives a PVE release that changes it.
   if pvesh get /cluster/mapping/dir --output-format json 2>/dev/null \
      | grep -q "\"id\":\"${DATA_MAP_ID}\""; then
     return 0
   fi
 
   log "creating directory mapping '${DATA_MAP_ID}' -> ${DATA_HOST_DIR}"
-  # Re-creating an existing mapping is an ERROR, not a no-op
-  # ("dir ID 'x' already defined"), so the check above is mandatory.
+  # Re-creating an existing mapping is an error, not a no-op, so the check
+  # above is mandatory.
   run pvesh create /cluster/mapping/dir \
     --id "$DATA_MAP_ID" \
     --map "node=$(hostname),path=${DATA_HOST_DIR}"
@@ -291,8 +282,8 @@ cmd_create() {
   log "cloning ${TEMPLATE_ID} -> ${VMID}"
   run qm clone "$TEMPLATE_ID" "$VMID" --name "$VMNAME" --full 1 --storage "$STORAGE"
 
-  # --balloon 0 is REQUIRED, not preferred: PVE refuses virtiofs on a VM with
-  # ballooning enabled. Do not "optimize" this back to a balloon value.
+  # --balloon 0 is required, not preferred: PVE refuses virtiofs on a VM with
+  # ballooning enabled.
   run qm set "$VMID" \
     --cores "$VM_CORES" \
     --memory "$VM_MEMORY_MB" --balloon 0 \
@@ -332,27 +323,19 @@ cmd_create() {
 
 ##### rebuild #####
 
-# ~/work lives on the VM disk, not on /data, so a rebuild destroys it. Refuse
-# unless every repo is clean AND pushed. This gate is the reason the
-# state-only persistence split is safe.
+# ~/work lives on the VM disk, so a rebuild destroys it. Refuse unless every
+# repo is clean and pushed; this gate is what makes the state-only
+# persistence split safe.
 #
-# The host cannot ssh to the guest: /root/.ssh on the PVE host holds only
-# the PUBLIC keys baked into boxes, no matching private key. So this and
-# snapshot_work use 'qm guest exec' (already used by cmd_salvage, needs no
-# credentials) plus the /data virtiofs share, which the host and guest both
-# see as the same directory with no transfer needed. Per this project's
-# incident ledger, a script is always pushed to a file and executed, never
-# inlined as a one-liner, because nested quoting through guest exec is a
-# known footgun.
+# The host has no private key for the guest, so this and snapshot_work go
+# through 'qm guest exec' plus the /data share both sides see as the same
+# directory. The script is always written to a file and run by path, never
+# inlined: nested quoting through guest exec corrupts silently.
 assert_work_tree_clean() {
   log "checking ~/work for unsaved state"
 
-  # The filename MUST be unique per invocation. The virtiofs mount is
-  # cache=always, which caches file CONTENT by name and does not revalidate
-  # on overwrite: writing a second script to the same path and guest-exec'ing
-  # it can return the guest's cached copy of the FIRST script's output. A
-  # fixed name here is not simplification, it is a reintroduced staleness
-  # bug. Do not "clean this up" back to a static filename.
+  # Unique per invocation, never a fixed path: /data is cache=always, so the
+  # guest serves its cached content for a name it has already read.
   local check_script
   check_script="${DATA_HOST_DIR}/.devbox-workcheck.$$.$(date -u +%s).sh"
   {
@@ -387,9 +370,8 @@ done
 EOF
   } > "$check_script"
 
-  # Run as ADMIN_USER, not root: guest exec runs as root by default, and
-  # git refuses to touch a repo it does not own ("dubious ownership"),
-  # which would make the gate report failures that are not real.
+  # As ADMIN_USER, not guest exec's default root: git refuses repos it does
+  # not own, and the gate would report failures that are not real.
   local raw rc
   raw="$(qm guest exec "$VMID" --timeout 60 -- /bin/sh -c \
     "su -s /bin/bash - '${ADMIN_USER}' -c 'bash /data/$(basename "$check_script")'" </dev/null 2>/dev/null)" && rc=0 || rc=$?
@@ -397,10 +379,9 @@ EOF
 
   [[ $rc -eq 0 ]] || fail "cannot reach the guest agent to check ~/work; pass --force to rebuild anyway"
 
-  # A gate that cannot verify must refuse, never pass: any missing/odd
-  # field, a timed-out command ("exited" absent or 0), or a nonzero
-  # exitcode all fall through to the except and abort via SystemExit(1),
-  # which the '||' below turns into a refusal.
+  # A gate that cannot verify must refuse, never pass. A missing field, a
+  # timed-out command, or a nonzero exitcode all exit 1 here, which the '||'
+  # below turns into a refusal.
   local dirty
   dirty="$(printf '%s' "$raw" | python3 -c 'import json, sys
 try:
@@ -427,22 +408,19 @@ snapshot_work() {
   run mkdir -p "${DATA_HOST_DIR}/work-snapshots"
   log "snapshotting ~/work to ${DATA_HOST_DIR}/work-snapshots/${stamp}.tar.zst"
 
-  # Belt and braces behind the gate, not the primary mechanism. Excludes the
-  # regenerable directories so the tarball stays small. Written straight to
-  # /data by the guest itself, no host-guest transfer needed.
+  # Belt and braces behind the gate, not the primary mechanism. Skips the
+  # regenerable directories, and the guest writes straight to /data.
   #
-  # The filename MUST be unique per invocation, same reason as
-  # assert_work_tree_clean's check_script: cache=always means the guest can
-  # serve a stale cached copy of a path it has seen before. Do not go back
-  # to a static filename.
+  # Unique filename per invocation, same cache=always reason as
+  # assert_work_tree_clean's check_script.
   local snap_script
   snap_script="${DATA_HOST_DIR}/.devbox-snapshot.$$.$(date -u +%s).sh"
   cat > "$snap_script" <<EOF
 tar -C "/home/${ADMIN_USER}" --exclude=node_modules --exclude=.venv --exclude=target --exclude=dist -cf - work | zstd -q -T0 -o "/data/work-snapshots/${stamp}.tar.zst"
 EOF
 
-  # Runs as root (guest exec's default): tar/zstd do not care about
-  # ownership the way git does, so no su is needed here.
+  # Root is fine here: tar and zstd do not care about ownership the way git
+  # does, so no su.
   local raw rc
   raw="$(qm guest exec "$VMID" --timeout 120 -- /bin/sh -c "bash /data/$(basename "$snap_script")" </dev/null 2>/dev/null)" && rc=0 || rc=$?
   rm -f "$snap_script"
@@ -455,44 +433,33 @@ sys.exit(0 if d.get("exited") == 1 and d.get("exitcode", 1) == 0 else 1)' 2>/dev
     warn "work snapshot failed; continuing because the clean-tree gate already passed"
   fi
 
-  # Keep the last three. 'local old=()' plus a bare "${old[@]}" (no ':-')
-  # is deliberate. The previous form synthesized an empty element from
-  # "${old[@]:-}" when the array was empty (the common case, and the case
-  # on every rebuild until a fourth snapshot exists), so the loop body ran
-  # once with old_file="". "[[ -n '' ]] && rm -f ..." was then the LAST
-  # statement in the function; the '&&' short-circuits on false, so the
-  # loop, and therefore the function, returned 1. Under set -e that killed
-  # the whole rebuild silently before it ever reached the confirmation
-  # prompt, with no message. An empty array under set -u already expands
-  # to zero words on bash 4.4+ (verified on 5.2 and 5.3), so ':-' was
-  # never needed and only introduced the bug.
+  # Keep the last three. 'local old=()' with a bare "${old[@]}" is
+  # deliberate: "${old[@]:-}" synthesises an empty element on the empty
+  # array, which is the common case here. An empty array already expands to
+  # zero words under set -u on bash 4.4+, so ':-' only introduces bugs.
   local old=()
   mapfile -t old < <(ls -1t "${DATA_HOST_DIR}/work-snapshots"/*.tar.zst 2>/dev/null | tail -n +4)
   for old_file in "${old[@]}"; do
     rm -f "$old_file"
   done
 
-  # Explicit, not incidental: this function is belt-and-braces behind the
-  # clean-tree gate, which has already passed by the time we get here. A
-  # failed snapshot is warned about above and must never abort the rebuild,
-  # so the function's exit status must not depend on what the last
-  # statement above happens to return.
+  # Explicit, not incidental. A failed snapshot is warned about above and
+  # must never abort the rebuild, so the exit status must not depend on
+  # whatever the loop happens to return.
   return 0
 }
 
 cmd_rebuild() {
   local force="${1:-}"
 
-  # Run before the destroy, not after: cmd_create's own preflight call runs
-  # AFTER 'qm destroy' below, so a fallible network gate failing there would
-  # leave the operator with no VM and a hard exit. Failing here instead
-  # costs nothing, the box still exists.
+  # Before the destroy, not after: cmd_create's own preflight runs past the
+  # 'qm destroy' below, where a failing network gate leaves no VM at all.
+  # Failing here costs nothing, the box still exists.
   ./scripts/preflight.sh || fail "preflight failed"
 
   qm status "$VMID" </dev/null >/dev/null 2>&1 || fail "VMID $VMID does not exist; use 'create'"
 
-  # Reported for the operator's benefit only; the checks below go through
-  # 'qm guest exec', not ssh, so this address is not otherwise used.
+  # For the operator's benefit only; the checks below use qm guest exec.
   local ip
   ip="$(guest_ip "$VMID")"
   log "current guest address: ${ip:-unknown}"
@@ -508,8 +475,7 @@ cmd_rebuild() {
 
   run qm stop "$VMID" --timeout 60 || true
   # --destroy-unreferenced-disks 0 so nothing outside this VM's config is
-  # touched. $DATA_HOST_DIR is a host directory and is never referenced by
-  # the VM config at all, so no destroy path can reach it.
+  # touched. $DATA_HOST_DIR is never referenced by it at all.
   run qm destroy "$VMID" --destroy-unreferenced-disks 0 --purge 1
 
   cmd_create

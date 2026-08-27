@@ -36,9 +36,9 @@ SWAP_SIZE_GB="8"
 ENABLE_UFW="1"
 EXTRA_APT_PACKAGES=""
 SSH_KEY_FILES="$tmp/key1.pub $tmp/key2.pub"
-# devbox.sh computes IMAGE_PATH from this at top level, unconditionally,
-# before verb dispatch. render doesn't use it, but the fixture must still
-# define it or 'set -u' fails the script before it ever reaches the case.
+# devbox.sh computes IMAGE_PATH from this before verb dispatch, so 'set -u'
+# fails the script before the case unless the fixture defines it. render
+# itself does not use it.
 CLOUD_IMAGE_URL="https://example.invalid/debian.qcow2"
 EOF
 
@@ -52,8 +52,8 @@ check "renders valid YAML" $?
 grep -q '^#cloud-config' "$tmp/rendered.yaml"
 check "starts with the #cloud-config header" $?
 
-# Omitting '- default' frees uid 1000 from Debian's built-in user. This is
-# load-bearing: stable uid 1000 keeps /srv/devdata ownership correct forever.
+# Omitting '- default' frees uid 1000 from Debian's built-in user, which is
+# what keeps /data ownership correct across every rebuild.
 ! grep -qE '^\s+- default\s*$' "$tmp/rendered.yaml"
 check "omits '- default' from users" $?
 
@@ -67,7 +67,7 @@ grep -q 'virtiofs' "$tmp/rendered.yaml" && grep -q '/data' "$tmp/rendered.yaml"
 check "mounts /data over virtiofs" $?
 
 ! grep -q 'Environment=TS_STATE_DIR' "$tmp/rendered.yaml"
-check "does not carry the dead TS_STATE_DIR override (tailscaled ignores it; bootstrap.sh symlinks the state dir instead)" $?
+check "does not carry the dead TS_STATE_DIR override (tailscaled ignores it; bootstrap.sh overrides ExecStart instead)" $?
 
 # No Tailscale auth key belongs in a snippet. State on /data means tailscaled
 # comes back authenticated after a rebuild without one.
@@ -117,14 +117,11 @@ printf 'SSH_KEY_FILES="%s/key1.pub %s/key2.pub"\n' "$tmp" "$tmp" >> "$tmp/inject
 inject_out="$(DEVBOX_CONFIG="$tmp/inject-config.sh" ./devbox.sh render)"
 printf '%s\n' "$inject_out" > "$tmp/inject.yaml"
 
-# Checked at the byte level rather than through yaml.safe_load: a plain
-# YAML scalar cannot itself contain ": " (colon-space), so the correct,
-# non-injected rendering of "testbox\nINJECTED: yes" folded onto one
-# physical line is not valid YAML on its own (safe_load raises). That is
-# the fix working, not a new bug, so parseability is not what this test
-# should assert. The property that matters is byte-level: no real newline
-# was ever manufactured from the literal backslash-n, so the payload stays
-# on hostname's line intact and no bare top-level "INJECTED:" line exists.
+# Byte level, not yaml.safe_load: the correct non-injected rendering is
+# itself invalid YAML, because a plain scalar cannot contain colon-space.
+# That is the fix working, so parseability is the wrong property to assert.
+# What matters is that no real newline was manufactured from the literal
+# backslash-n, and no top-level "INJECTED:" line exists.
 literal_intact=0
 grep -qF 'testbox\nINJECTED: yes' "$tmp/inject.yaml" || literal_intact=1
 no_injected_key=0

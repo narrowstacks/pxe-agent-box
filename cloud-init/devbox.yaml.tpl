@@ -10,10 +10,9 @@ hostname: @VMNAME@
 preserve_hostname: false
 timezone: @GUEST_TIMEZONE@
 
-# IMPORTANT: no "- default" entry. Omitting it prevents the Debian image's
-# built-in 'debian' user from being created, which frees uid 1000 for the
-# admin user. Stable uid 1000 is what keeps /srv/devdata ownership correct
-# across every rebuild. Do not add it back.
+# No "- default" entry, deliberately: omitting it skips the image's built-in
+# 'debian' user and frees uid 1000 for the admin user. Stable uid 1000 is
+# what keeps /data ownership correct across rebuilds. Do not add it back.
 users:
   - name: @ADMIN_USER@
     uid: 1000
@@ -34,9 +33,9 @@ packages:
   - zsh
   - qemu-guest-agent
 
-# The persistent state volume. A Proxmox directory mapping exposed over
-# virtiofs; the mounts module runs at config stage, before runcmd at final
-# stage, so /data is available to bootstrap.
+# The persistent state volume: a Proxmox directory mapping over virtiofs.
+# The mounts module runs at config stage, before runcmd at final stage, so
+# /data is mounted by the time bootstrap runs.
 mounts:
   - [ "@DATA_MAP_ID@", "/data", "virtiofs", "defaults,nofail", "0", "0" ]
 
@@ -54,14 +53,9 @@ write_files:
       EXTRA_APT_PACKAGES="@EXTRA_APT_PACKAGES@"
       BOOTSTRAP_URL="@BOOTSTRAP_URL@"
 
-# Tailscale's node identity is persisted by bootstrap.sh, which overrides
-# tailscaled's ExecStart to point --state directly at /data. tailscaled's
-# own ExecStart hardcodes --state=..., so a TS_STATE_DIR env drop-in here
-# (as a prior design tried) is a no-op: that env var is read by upstream's
-# CONTAINERBOOT wrapper, not by tailscaled. A symlinked /var/lib/tailscale
-# was tried next and fails hard, since the unit also declares
-# StateDirectory=tailscale and systemd's own directory chase over a
-# symlink+virtiofs errors out (see bootstrap.sh for the full account).
+# Nothing here persists Tailscale's node identity. bootstrap.sh does it, by
+# overriding tailscaled's ExecStart to point --state at /data; a TS_STATE_DIR
+# drop-in here would be a no-op (see bootstrap.sh for why).
 
 runcmd:
   - systemctl enable --now qemu-guest-agent

@@ -23,9 +23,9 @@ check() {  # check <description> <exit-code>
 # source ~/.zshrc, which is exactly how scripts, scp and Moshi probe the box.
 remote() { ssh -o BatchMode=yes "$HOST" "$@"; }
 
-# Asserts a login-shell probe exits 0 AND writes nothing to stderr. Bash
-# syntax in /etc/profile.d made 'sh -lc' emit a wall of errors and exit 2,
-# which silently broke Moshi's moshi-hook detection.
+# Asserts a login-shell probe exits 0 and writes nothing to stderr. Bash
+# syntax in /etc/profile.d makes 'sh -lc' emit errors and exit 2, which
+# breaks anything that probes the box that way.
 remote_clean_stderr() {  # remote_clean_stderr <shell>
   local err
   err="$(ssh -o BatchMode=yes "$HOST" "$1 -lc 'true'" 2>&1 >/dev/null)"
@@ -78,26 +78,19 @@ check "every /etc/profile.d file parses under dash" $?
 
 printf '\n\033[1;34m== state persistence ==\033[0m\n'
 
-# All 13 state links bootstrap.sh creates under $DEV_HOME (~/.zshrc and
-# ~/.zshenv are asserted separately below, in "shell configuration").
-# 'readlink -f | grep' alone passes on a BROKEN symlink (readlink -f
-# resolves the link's syntax without caring whether the target exists), so
-# test -e checks the target actually exists and test -O checks it is owned
-# by the admin user, per the spec.
+# Every state link bootstrap.sh creates under $DEV_HOME; ~/.zshrc is
+# asserted separately below. 'readlink -f | grep' alone passes on a broken
+# symlink, so test -e proves the target exists and test -O proves the admin
+# user owns it.
 for p in .claude .claude.json .config/gh .config/herdr .config/moshi .config/opencode .config/mise .codex .pi .zsh_history.d .gitconfig .ssh/known_hosts .zshenv; do
   remote "test -L ~/$p && readlink -f ~/$p | grep -q '^/data/' && test -e ~/$p && test -O ~/$p"
   check "$p is a symlink into /data, target exists and is owned by the admin user" $?
 done
 
-# tailscaled's node identity is not under $DEV_HOME (it is root-owned,
-# outside /home), so it is checked separately. This is the assertion for
-# C1: tailscaled's own ExecStart hardcodes --state=/var/lib/tailscale/...,
-# which a TS_STATE_DIR env var never overrides (that variable is read by
-# upstream's CONTAINERBOOT wrapper, not tailscaled), and a symlinked
-# /var/lib/tailscale fails the unit outright (StateDirectory= vs. a
-# symlinked target over virtiofs). bootstrap.sh instead overrides
-# ExecStart's --state flag directly, so check the EFFECTIVE flag systemd
-# would actually run, not just a file on disk that nothing may read from.
+# tailscaled's identity is root-owned and outside /home, so it is checked
+# separately. bootstrap.sh persists it by overriding ExecStart's --state
+# flag, so assert the effective flag systemd would run, not just a file on
+# disk that nothing may read from.
 remote 'systemctl show tailscaled -p ExecStart --no-pager | grep -q -- "--state=/data/"'
 check "tailscaled's effective --state flag resolves under /data (survives a rebuild)" $?
 
@@ -133,10 +126,9 @@ remote '! grep -qE "promptinit|prompt adam1" ~/.zshrc'
 # shellcheck disable=SC2088  # description text, not an executed path
 check "~/.zshrc registers no competing prompt" $?
 
-# grep -qv on its own succeeds on ANY non-matching line, including an
-# empty one, so it alone would pass even if starship never initialised.
-# Positive assertion first (starship IS the prompt), negative second
-# (herdr's adam1 theme is NOT), so a genuinely broken prompt still fails.
+# Positive assertion first, then the negative. 'grep -qv adam' on its own
+# succeeds on any non-matching line, including the empty one a broken
+# prompt produces.
 remote 'zsh -ic "echo \$PROMPT" 2>/dev/null | grep -q starship'
 check "starship owns the interactive prompt" $?
 
@@ -147,17 +139,15 @@ remote 'test -L ~/.zshrc && readlink -f ~/.zshrc | grep -q "^/data/"'
 # shellcheck disable=SC2088  # description text, not an executed path
 check "~/.zshrc persists on /data" $?
 
-# The gate that would have caught the .local/bin duplication between
-# ~/.zshenv and ~/.zshrc: multiple PATH owners for the same entry silently
-# stack instead of erroring, so nothing else in this suite would notice.
+# Two owners for one PATH entry stack silently instead of erroring, so
+# nothing else in this suite would notice.
 remote 'test "$(zsh -ic "echo \$PATH" 2>/dev/null | tr : "\n" | sort | uniq -d | wc -l)" -eq 0'
 check "interactive PATH has no duplicate entries" $?
 
-# Moved here from Task 10: these need the login-shell PATH that
-# /etc/profile.d/15-devbox-mise-shims.sh creates, so they cannot pass until
-# this task lands. Do NOT weaken them to a bare 'command -v' or a direct
-# path: agents and Moshi invoke these from login shells, and a tool that
-# only works by absolute path is a tool that does not work.
+# These need the login-shell PATH that 15-devbox-mise-shims.sh creates. Do
+# not weaken them to a bare 'command -v' or an absolute path: agents and
+# Moshi invoke these from login shells, and a tool that only works by full
+# path does not work.
 printf '\n\033[1;34m== user tree (mise) ==\033[0m\n'
 
 for b in mise node npm bun pnpm python uv opencode codex pi tsx prettier eslint vitest; do
@@ -171,11 +161,9 @@ check "opencode is owned by the admin user" $?
 remote 'zsh -lc "opencode --version" >/dev/null 2>&1'
 check "opencode runs (needs avx2 from x86-64-v3)" $?
 
-# Issue #2 in the incident ledger, verbatim: "Non-interactive shells have a
-# short PATH. Scripts, scp, and remote commands never source ~/.zshrc, so
-# user-local bins are invisible." The zsh -lc checks above only prove the
-# zsh path; agents, scripts, scp and remote-exec actually use bash or plain
-# non-interactive shells, so those are the invocation styles that matter.
+# The zsh -lc checks above only prove the zsh path. Agents, scripts and scp
+# use bash or a plain non-interactive shell, which never source ~/.zshrc, so
+# those invocation styles need asserting too.
 printf '\n\033[1;34m== non-interactive PATH (all shells) ==\033[0m\n'
 
 for b in node bun opencode mise; do
@@ -185,9 +173,8 @@ for b in node bun opencode mise; do
   check "$b is on the login PATH under dash/sh" $?
 done
 
-# The one case /etc/profile.d cannot reach: plain 'ssh host cmd' is
-# non-interactive AND non-login, so no profile.d file runs. ~/.zshenv fixes
-# this because zsh sources it unconditionally, for every invocation.
+# The one case /etc/profile.d cannot reach: 'ssh host cmd' is neither login
+# nor interactive. ~/.zshenv covers it; zsh sources it on every invocation.
 remote 'command -v node >/dev/null'
 check "node resolves for a plain non-interactive ssh command" $?
 
@@ -204,53 +191,39 @@ done
 remote 'herdr session list 2>/dev/null | grep -q .'
 check "herdr reports at least one session" $?
 
-# moshi-hook state lives in ~/.config/moshi, NOT in ~/.moshi*. A previous
-# check probed the wrong path and reported unpaired forever.
+# moshi-hook state lives in ~/.config/moshi, not ~/.moshi*.
 remote 'test -d ~/.config/moshi'
 check "moshi state directory exists at ~/.config/moshi" $?
 
-# Runs last because it is slow: a full re-convergence, not a single probe.
-# Default is to run it. SKIP_SLOW is an opt-out for fast iteration, not an
-# opt-in, because a check nobody runs by default is a check that silently
-# stops existing.
+# Last because it is slow: a full re-convergence, not a single probe.
+# SKIP_SLOW is an opt-out for fast iteration, never an opt-in: a check
+# nobody runs by default is a check that silently stops existing.
 if [[ "${SKIP_SLOW:-0}" != "1" ]]; then
   printf '\n\033[1;34m== idempotency ==\033[0m\n'
-  # A qemu-ga restart once orphaned half a run and a second instance raced
-  # dpkg locks, killing both. Re-running end to end must be a genuine no-op.
+  # Re-running end to end must be a genuine no-op.
   remote 'sudo /usr/local/sbin/devbox-bootstrap >/tmp/rerun.log 2>&1'
   check "devbox-bootstrap re-runs clean end to end" $?
 
-  # bootstrap.sh's fail() writes "ERROR:" behind a raw ANSI color escape
-  # (printf '\033[1;31mERROR:...'), so a plain "^ERROR" anchor never matches
-  # the bytes actually in the log; strip escapes first, then anchor.
+  # fail() writes "ERROR:" behind an ANSI escape, so a "^ERROR" anchor never
+  # matches the bytes in the log. Strip escapes first, then anchor.
   #
-  # WARNING lines are deliberately NOT asserted to be zero. bootstrap.sh
-  # warns and continues for a known list of optional tools (opencode, codex,
-  # pi, pnpm, uv, chrome, moshi-hook, mise reshim, ...), and it retries those
-  # installs unconditionally on every run, so a transient warning on a
-  # re-run is not proof the re-run was non-idempotent. What is provable: the
-  # run exited 0, and it logged nothing through the ERROR path. Warnings are
-  # still surfaced below, uncounted, so a human can eyeball them.
+  # WARNING lines are deliberately not asserted to be zero: bootstrap.sh
+  # retries every optional tool on each run, so a transient warning is not
+  # proof of non-idempotency. They are surfaced uncounted below instead.
   remote 'sed -E "s/\x1b\[[0-9;]*m//g" /tmp/rerun.log > /tmp/rerun.clean.log'
 
-  # If the sed/redirect above silently failed, the clean log would be
-  # missing or empty, and '! grep -q ...' against a missing file exits 2,
-  # which the leading '!' flips into a false PASS: a missing log would read
-  # as "no errors found". Assert the log exists and is non-empty first so
-  # that failure mode fails loudly instead of passing quietly.
+  # '! grep -q' against a missing file exits 2, which the '!' flips into a
+  # false PASS reading as "no errors found". Assert the log exists first so
+  # a failed sed above fails loudly instead.
   remote 'test -s /tmp/rerun.clean.log'
   check "the re-run produced a readable log" $?
 
   remote '! grep -q "^ERROR:" /tmp/rerun.clean.log'
   check "the re-run logged no errors" $?
 
-  # apt's own summary line is deterministic on a genuinely idempotent
-  # re-run, unlike the ERROR/WARNING checks above. It proves nothing
-  # actually changed, not merely that nothing complained. The docker,
-  # tailscale, gh, claude-code and chrome installs below this line in
-  # bootstrap.sh are each gated by 'command -v', so on a re-run only the
-  # base 'apt-get install' at the top of the script runs apt at all, and
-  # this line appears exactly once.
+  # Unlike the checks above, apt's summary proves nothing changed rather
+  # than that nothing complained. Every later install in bootstrap.sh is
+  # gated by 'command -v', so a re-run runs apt once, at the top.
   remote 'grep -q "0 upgraded, 0 newly installed, 0 to remove and 0 not upgraded." /tmp/rerun.clean.log'
   check "the re-run installed and upgraded nothing (apt reports no changes)" $?
 

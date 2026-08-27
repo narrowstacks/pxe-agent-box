@@ -14,10 +14,10 @@ VMID="104"
 VMNAME="devbox"
 
 ##### Box sizing #####
-# NOTE: --balloon 0 is forced by devbox.sh because PVE requires ballooning
-# disabled for virtiofs. Size VM_MEMORY_MB against the host's real RAM:
-# charon has 32 GB with ~12 GB committed to other VMs, so 16 GB fits and
-# 24 GB does not. scripts/preflight.sh checks this before every create.
+# NOTE: devbox.sh forces --balloon 0, because PVE requires ballooning
+# disabled for virtiofs. Size VM_MEMORY_MB against the host's real RAM minus
+# what other VMs already hold; scripts/preflight.sh checks it before every
+# create.
 
 VM_CORES="8"
 VM_MEMORY_MB="16384"

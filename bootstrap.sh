@@ -13,10 +13,9 @@
 #
 set -euo pipefail
 
-# Host config.sh values arrive through this file, written by cloud-init.
-# Sourced BEFORE the defaults below so the defaults act as fallbacks. This
-# file is the only channel carrying host config into the guest, because
-# bootstrap.sh is curl'd standalone and cannot otherwise learn any value.
+# Host config values, written by cloud-init. Sourced before the defaults
+# below so those act as fallbacks. This is the only channel carrying host
+# config into the guest; bootstrap.sh is curl'd standalone.
 # shellcheck source=/dev/null
 if [[ -r /etc/devbox.env ]]; then
   source /etc/devbox.env
@@ -33,13 +32,12 @@ log()  { printf '\n\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33mWARNING:\033[0m %s\n' "$*" >&2; }
 fail() { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
-# Multi-line commands as the dev user go through stdin, never as arguments.
-# 'sudo -i' joins its arguments with spaces and re-parses them, which
-# destroys quoting and newlines.
+# Runs a script as the dev user. On stdin, never as arguments: 'sudo -i'
+# joins its arguments with spaces and re-parses them, destroying quoting.
 as_user() { sudo -iu "$DEV_USER" bash -s; }
 
-# An optional step: log a WARNING and continue. The core chain does not use
-# this; a base-package or Docker failure must abort loudly.
+# Optional step: warn and continue. The core chain does not use this; a
+# base-package or Docker failure must abort loudly.
 optional() {  # optional <label> <command...>
   local label="$1"; shift
   if "$@"; then return 0; fi
@@ -61,16 +59,14 @@ if [[ "${1:-}" == "--update" ]]; then
   exec /usr/local/sbin/devbox-bootstrap
 fi
 
-# flock, not pgrep -f. pgrep -f matches its own command line and always finds
-# itself, which is how a previous guard silently never fired. A qemu-ga
-# restart once orphaned half a run and a second instance raced dpkg locks.
+# Single-instance guard. flock, not pgrep -f, which matches its own command
+# line and always finds itself.
 exec 9>/var/lock/devbox-bootstrap.lock
 flock -n 9 || fail "another devbox-bootstrap is already running"
 
 id "$DEV_USER" >/dev/null 2>&1 || fail "user $DEV_USER does not exist"
-# /data ownership below is chowned to a hardcoded 1000:1000 in ~14 places.
-# If the uid-1000 pin in cloud-init ever fails, this guard is what stops
-# bootstrap from silently chowning /data/state to the wrong user.
+# Everything below chowns /data to a hardcoded 1000:1000. This guard is what
+# stops a failed cloud-init uid pin from chowning it to the wrong user.
 [[ "$(id -u "$DEV_USER")" == "1000" ]] \
   || fail "$DEV_USER is uid $(id -u "$DEV_USER"), not 1000; /data ownership throughout this script assumes uid 1000, refusing to run against a wrong-uid user"
 mountpoint -q "$DATA" || fail "$DATA is not a mountpoint; virtiofs did not come up"
@@ -81,8 +77,7 @@ export DEBIAN_FRONTEND=noninteractive
 
 log "base packages"
 apt-get update -qq
-# EXTRA_APT_PACKAGES is a host-supplied space-separated list; word splitting
-# is intended so each package becomes its own apt-get argument.
+# EXTRA_APT_PACKAGES is a host-supplied list; word splitting is intended.
 # shellcheck disable=SC2086
 apt-get install -y --no-install-recommends \
   zsh zsh-autosuggestions zsh-syntax-highlighting \
@@ -107,8 +102,8 @@ ln -sf "$batcat_path" /usr/local/bin/bat
 
 log "kernel and limit tuning"
 
-# Vite, webpack, nodemon and jest watchers exhaust the default inotify budget
-# fast and fail with a confusing ENOSPC. The single most common dev-VM papercut.
+# File watchers exhaust the default inotify budget fast and fail with a
+# confusing ENOSPC.
 cat >/etc/sysctl.d/60-devbox.conf <<'EOF'
 fs.inotify.max_user_watches   = 1048576
 fs.inotify.max_user_instances = 1024
@@ -129,22 +124,21 @@ cat >/etc/systemd/system.conf.d/60-devbox.conf <<'EOF'
 DefaultLimitNOFILE=1048576
 EOF
 
-# tmpfs /tmp keeps build scratch off the virtual disk entirely.
+# tmpfs /tmp keeps build scratch off the VM disk.
 if ! systemctl is-enabled tmp.mount >/dev/null 2>&1; then
   cp /usr/share/systemd/tmp.mount /etc/systemd/system/tmp.mount 2>/dev/null || true
   systemctl enable tmp.mount 2>/dev/null \
     || warn "tmpfs /tmp not enabled; build scratch will land on the VM disk"
 fi
 
-# OOM cushion. Parallel test workers spike hard.
+# OOM cushion for parallel test workers.
 if [[ ! -f /swapfile ]]; then
   fallocate -l "${SWAP_SIZE_GB}G" /swapfile
   chmod 600 /swapfile
   mkswap /swapfile >/dev/null
 fi
 grep -q '^/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >>/etc/fstab
-# Existence is not activation: the file can survive a rebuild without being
-# swapped on, and vice versa. Check the actual end state, not just -f.
+# The file existing does not mean it is swapped on. Check the end state.
 if ! swapon --show=NAME --noheadings 2>/dev/null | grep -qx '/swapfile'; then
   swapon /swapfile || warn "could not enable /swapfile"
 fi
@@ -154,9 +148,8 @@ fi
 log "persistent state links"
 
 # link_state <path-under-$DATA/state> <path-relative-to-$DEV_HOME>
-# If the destination already exists as a real file or directory, its contents
-# move into $DATA first. That is what makes salvaged state and a fresh first
-# boot converge on the same place.
+# An existing real file or directory at the destination moves into $DATA
+# first, so salvaged state and a fresh first boot converge on one place.
 link_state() {
   local src="${DATA}/state/$1" dst="${DEV_HOME}/$2"
   mkdir -p "$(dirname "$src")" "$(dirname "$dst")"
@@ -164,23 +157,21 @@ link_state() {
   if [[ -e "$dst" && ! -L "$dst" ]]; then
     if [[ -d "$dst" ]]; then
       mkdir -p "$src"
-      # Do NOT discard cp's status. /data is virtiofs, where xattr and
-      # special-file copies can fail, and the rm below is the only copy's
-      # last moment. Aborting loudly beats deleting state silently.
+      # Never delete the original on a failed copy: /data is virtiofs, where
+      # xattr and special-file copies can fail, and the rm below is final.
       cp -a "$dst/." "$src/" \
         || fail "could not copy ${dst} into ${src}; refusing to delete the original"
     else
-      # If src already exists, salvaged state on /data wins over a freshly
-      # created destination, so the copy is skipped rather than overwriting
-      # it. Otherwise copy, and abort rather than delete dst on failure.
+      # Salvaged state on /data wins over a freshly created destination, so
+      # an existing src is left alone rather than overwritten.
       [[ -e "$src" ]] || cp -a "$dst" "$src" \
         || fail "could not copy ${dst} to ${src}; refusing to delete the original"
     fi
     rm -rf "$dst"
   fi
 
-  # Create the source if it still does not exist, matching the destination's
-  # intended type. Callers pass a trailing marker via link_state_file for files.
+  # Create the source if it still does not exist. Directories here; files go
+  # through link_state_file.
   [[ -e "$src" ]] || mkdir -p "$src"
   ln -sfn "$src" "$dst"
   chown -R "1000:1000" "$src"
@@ -191,9 +182,8 @@ link_state_file() {
   local src="${DATA}/state/$1" dst="${DEV_HOME}/$2"
   mkdir -p "$(dirname "$src")" "$(dirname "$dst")"
   if [[ -f "$dst" && ! -L "$dst" ]]; then
-    # Same precedence as link_state: skip the copy if src already has
-    # salvaged state, otherwise copy and abort rather than delete dst on
-    # failure.
+    # Same precedence as link_state: existing salvaged state wins, and a
+    # failed copy aborts rather than deleting dst.
     [[ -e "$src" ]] || cp -a "$dst" "$src" \
       || fail "could not copy ${dst} to ${src}; refusing to delete the original"
     rm -f "$dst"
@@ -203,11 +193,9 @@ link_state_file() {
   chown "1000:1000" "$src"
 }
 
-# Same as link_state_file, but never fabricates a placeholder: if the file
-# has never existed on either side, it is skipped entirely rather than
-# creating an empty stand-in. Used for a file whose mere existence has
-# meaning (an ssh client key an empty file would still get loaded, and then
-# rejected, not just be inert).
+# Same as link_state_file but never fabricates an empty placeholder. For
+# files whose mere existence has meaning: an empty ssh client key is loaded
+# and rejected, not ignored.
 link_state_file_optional() {
   local src="${DATA}/state/$1" dst="${DEV_HOME}/$2"
   [[ -e "$dst" || -e "$src" ]] || return 0
@@ -233,16 +221,15 @@ link_state      pi               .pi
 link_state      zsh-history      .zsh_history.d
 link_state_file gitconfig        .gitconfig
 
-# ~/.ssh stays a REAL directory so cloud-init keeps ownership of
-# authorized_keys, which it rewrites on every boot. Only the files that
-# should outlive a rebuild are linked individually.
+# ~/.ssh stays a real directory so cloud-init keeps ownership of
+# authorized_keys, which it rewrites every boot. Only the files that should
+# outlive a rebuild are linked individually.
 mkdir -p "${DEV_HOME}/.ssh" "${DATA}/state/ssh"
 chmod 700 "${DEV_HOME}/.ssh"
 chown 1000:1000 "${DEV_HOME}/.ssh"
 link_state_file ssh/known_hosts   .ssh/known_hosts
-# Spec 3.3: a stable outbound git identity across rebuilds. Not generated
-# here, only persisted if the operator has dropped one in; a missing key
-# stays missing rather than getting fabricated.
+# A stable outbound git identity across rebuilds. Persisted only if the
+# operator drops a key in; never generated here.
 link_state_file_optional ssh/id_ed25519      .ssh/id_ed25519
 link_state_file_optional ssh/id_ed25519.pub  .ssh/id_ed25519.pub
 chown -R 1000:1000 "${DATA}/state/ssh"
@@ -250,8 +237,8 @@ chown -R 1000:1000 "${DATA}/state/ssh"
 mkdir -p "${DATA}/work-snapshots"
 chown 1000:1000 "${DATA}/work-snapshots"
 
-# Work trees live on the VM disk, not on /data. They are fast, large, and
-# durable via git remotes. devbox.sh rebuild gates on a clean tree.
+# Work trees live on the VM disk, not /data: large, hot, and durable via git
+# remotes. devbox.sh rebuild gates on a clean tree.
 mkdir -p "${DEV_HOME}/work"
 chown 1000:1000 "${DEV_HOME}/work"
 
@@ -264,9 +251,8 @@ if [[ "$ENABLE_UFW" == "1" ]]; then
   ufw allow OpenSSH >/dev/null
   # mosh survives laptop sleep and network switches.
   ufw allow 60000:61000/udp >/dev/null
-  # --force, never 'yes | ufw enable'. Under pipefail the producer outlives
-  # the consumer and SIGPIPE killed provisioning right after the firewall
-  # came up, which read as a silent late-stage failure.
+  # --force, never 'yes | ufw enable': under pipefail the producer outlives
+  # the consumer and SIGPIPE kills provisioning.
   ufw --force enable >/dev/null
 fi
 
@@ -274,12 +260,10 @@ log "core chain complete"
 
 ##### 5. root-tree tools: apt repositories #####
 #
-# Rule 1, root half: tools the PROVISIONER updates live in apt or directly in
-# /usr/local/bin, owned by root, exactly like distro packages. Nothing here
-# is ever symlinked into a user tree. The previous setup installed several of
-# these into /root/.local/bin (a mode-0700 home) and symlinked them into
-# /usr/local/bin, so 'dev' could not traverse the path and the "global"
-# binaries were invisible to the only user who ran them.
+# Rule 1, root half: tools the provisioner updates live in apt or directly
+# in /usr/local/bin, root-owned like distro packages. Nothing here is ever
+# symlinked into a user tree, or out of a mode-0700 /root that dev cannot
+# traverse.
 
 CODENAME="$(. /etc/os-release && echo "$VERSION_CODENAME")"
 
@@ -299,8 +283,8 @@ if ! command -v docker >/dev/null 2>&1; then
     docker-buildx-plugin docker-compose-plugin
 fi
 usermod -aG docker "$DEV_USER"
-# Membership in the docker group is effectively root on this guest. Accepted:
-# the VM itself is the security boundary. Switch to rootless if you disagree.
+# The docker group is effectively root here. Accepted: the VM itself is the
+# security boundary. Switch to rootless if you disagree.
 
 if ! command -v tailscale >/dev/null 2>&1; then
   log "tailscale"
@@ -312,33 +296,21 @@ if ! command -v tailscale >/dev/null 2>&1; then
   apt-get install -y tailscale
 fi
 
-# tailscaled's own ExecStart hardcodes --state=/var/lib/tailscale/tailscaled.state,
-# which wins over any TS_STATE_DIR env var: that variable is read by
-# upstream's CONTAINERBOOT wrapper, not by tailscaled itself. An env
-# drop-in was tried first and confirmed on a live box to be a no-op.
-#
-# Symlinking /var/lib/tailscale itself (link_state's usual discipline) was
-# tried second and FAILS HARD on this box: the unit also declares
-# StateDirectory=tailscale, and systemd's own exec-time setup for that
-# directive does its own directory chase over the symlink and virtiofs,
-# erroring "Too many levels of symbolic links" (systemd exit
-# 238/STATE_DIRECTORY) and never starting tailscaled at all. Confirmed by
-# restarting tailscaled after installing the symlink; reverted.
-#
-# Overriding ExecStart to point --state directly at /data sidesteps
-# StateDirectory entirely, since that directive only governs
-# /var/lib/tailscale, which this no longer touches. It duplicates
-# upstream's command line (PORT and FLAGS still come from the unit's own
-# EnvironmentFile=/etc/default/tailscaled, untouched by this drop-in), so if
-# a future tailscale package changes its ExecStart, this needs updating too.
+# tailscaled's packaged ExecStart hardcodes --state=/var/lib/tailscale/...,
+# so persisting state means overriding ExecStart. Two other routes were
+# tried on a live box and do not work: TS_STATE_DIR is read by upstream's
+# containerboot wrapper, not tailscaled, and symlinking /var/lib/tailscale
+# fails the unit's own StateDirectory= over virtiofs ("Too many levels of
+# symbolic links"). PORT and FLAGS still come from the unit's
+# EnvironmentFile, but this restates upstream's command line, so a package
+# update that changes ExecStart needs a matching update here.
 TAILSCALE_DROPIN=/etc/systemd/system/tailscaled.service.d/state-on-data.conf
 if ! grep -q '^ExecStart=/usr/sbin/tailscaled --state=/data/state/tailscale/tailscaled.state' "$TAILSCALE_DROPIN" 2>/dev/null; then
   log "persisting tailscale state on /data"
   systemctl stop tailscaled 2>/dev/null || true
   mkdir -p "${DATA}/state/tailscale"
-  # Same discipline as link_state: copy any existing identity in, and never
-  # delete the original unless the copy succeeded. Leaving the orphaned
-  # on-disk copy behind is harmless once ExecStart stops pointing at it.
+  # Copy any existing identity in, never deleting the original. The orphan
+  # left in /var/lib is harmless once ExecStart stops pointing at it.
   if [[ -f /var/lib/tailscale/tailscaled.state && ! -e "${DATA}/state/tailscale/tailscaled.state" ]]; then
     cp -a /var/lib/tailscale/tailscaled.state "${DATA}/state/tailscale/tailscaled.state" \
       || fail "could not copy /var/lib/tailscale/tailscaled.state into ${DATA}/state/tailscale; refusing to leave tailscale state stranded"
@@ -354,19 +326,17 @@ fi
 chown -R root:root "${DATA}/state/tailscale"
 chmod 700 "${DATA}/state/tailscale"
 
-# A drop-in from the earlier, broken design (TS_STATE_DIR, which tailscaled
-# never reads) is harmless but wrong; remove it so nothing on the box still
-# documents a mechanism that does not work.
+# Remove the dead TS_STATE_DIR drop-in from the earlier design, so nothing
+# on the box still documents a mechanism that does not work.
 if [[ -f /etc/systemd/system/tailscaled.service.d/override.conf ]]; then
   rm -f /etc/systemd/system/tailscaled.service.d/override.conf
   systemctl daemon-reload
 fi
 
 systemctl enable --now tailscaled
-# No 'tailscale up' here and no auth key anywhere. The node identity, once
-# set by the one manual 'sudo tailscale up', now lives under /data via the
-# ExecStart override above and survives every rebuild along with the
-# MagicDNS name.
+# No 'tailscale up' and no auth key anywhere. The identity set by the one
+# manual 'sudo tailscale up' lives on /data via the override above and
+# survives every rebuild, MagicDNS name included.
 
 if ! command -v gh >/dev/null 2>&1; then
   log "gh"
@@ -389,9 +359,8 @@ if ! command -v claude >/dev/null 2>&1; then
   [[ "$FOUND" == "$EXPECTED" ]] || fail "claude-code key fingerprint mismatch: expected $EXPECTED, found ${FOUND:-<none>}"
 
   # The stable channel trails latest by about a week and skips releases with
-  # known major regressions, which is what a box running long unattended
-  # agent loops wants. The native installer busy-looped at 100% CPU with zero
-  # network for 12+ minutes on this headless guest, twice; apt does not.
+  # known regressions, which suits long unattended agent loops. apt, not the
+  # native installer, which busy-looped for 12+ minutes on this guest.
   echo "deb [signed-by=/etc/apt/keyrings/claude-code.asc] https://downloads.claude.ai/claude-code/apt/stable stable main" \
     >/etc/apt/sources.list.d/claude-code.list
   apt-get update -qq
@@ -400,8 +369,7 @@ fi
 
 if ! command -v google-chrome >/dev/null 2>&1; then
   log "chrome"
-  # The apt repo rather than the direct .deb the old provisioner fetched, so
-  # Chrome upgrades ride normal 'apt upgrade' instead of going stale.
+  # The apt repo, not a direct .deb, so Chrome rides normal 'apt upgrade'.
   if add_repo google-chrome https://dl.google.com/linux/linux_signing_key.pub \
        "deb [arch=amd64 signed-by=/etc/apt/keyrings/google-chrome.asc] https://dl.google.com/linux/chrome/deb/ stable main" \
      && apt-get update -qq && apt-get install -y google-chrome-stable; then
@@ -421,41 +389,34 @@ chmod 0755 /usr/local/bin/google-chrome-under-xvfb
 
 ##### 6. root-tree tools: direct installers #####
 #
-# No distro package exists for these. Because bootstrap runs as root,
+# No distro package exists for these. bootstrap runs as root, so
 # /usr/local/bin is writable and no installer needs to escalate or prompt.
-# Each workaround below names the upstream bug it exists for.
 
 if ! command -v starship >/dev/null 2>&1; then
   log "starship"
-  # --yes because the installer prompts interactively, and its stdin IS the
-  # piped script, so a prompt breaks the pipe. -b to target /usr/local/bin
-  # directly rather than installing to a home and copying afterward.
+  # --yes because the installer's stdin is the piped script, so a prompt
+  # breaks the pipe. -b installs straight into /usr/local/bin.
   optional "starship" sh -c \
     'curl -fsSL https://starship.rs/install.sh | sh -s -- --yes -b /usr/local/bin >/dev/null'
 fi
 
 if ! command -v herdr >/dev/null 2>&1; then
   log "herdr"
-  # HOME is set under cloud-init runcmd but NOT on qemu-ga exec paths, and
-  # herdr's installer dies on "HOME: parameter not set" without it.
+  # HOME is unset on qemu-ga exec paths and herdr's installer dies without it.
   export HOME="${HOME:-/root}"
-  # HERDR_INSTALL_DIR must ride the SH side of the pipe. An env prefix on the
-  # curl side never reaches the installer. Confirmed working directly into
-  # /usr/local/bin, so there is no cross-tree fallback copy here: unlike
-  # moshi-hook below, herdr's own install-dir override actually works.
+  # HERDR_INSTALL_DIR rides the sh side of the pipe; a prefix on the curl
+  # side never reaches the installer. The override works, so unlike
+  # moshi-hook below this needs no cross-tree fallback copy.
   curl -fsSL https://herdr.dev/install.sh | HERDR_INSTALL_DIR=/usr/local/bin sh >/dev/null \
     || warn "herdr install failed"
 fi
 
 if ! command -v moshi-hook >/dev/null 2>&1; then
   log "moshi-hook"
-  # THE ONE DOCUMENTED CROSS-TREE EXCEPTION. The installer ignores INSTALL_DIR
-  # when the variable prefixes the CURL side of the pipe and lands in
-  # ~root/.local/bin regardless, so pass the env to the SH side and copy
-  # afterward. Copies, not symlinks: /root is mode 0700 and dev cannot
-  # traverse it, which is how "global" binaries became invisible before.
-  # Non-fatal: cdn.getmoshi.app sits behind Cloudflare and curl gets 403'd on
-  # some networks. Installs TWO binaries, moshi and moshi-hook.
+  # The one documented cross-tree exception: the installer lands in
+  # ~root/.local/bin regardless of INSTALL_DIR, so copy out afterward.
+  # Copies, not symlinks: /root is mode 0700 and dev cannot traverse it.
+  # Installs two binaries, and 403s behind Cloudflare on some networks.
   curl -fsSL https://getmoshi.app/install.sh \
     | MOSHI_HOOK_SKIP_FIRST_RUN=1 INSTALL_DIR=/usr/local/bin sh \
     || warn "moshi-hook install failed (Cloudflare 403?); rerun 'curl -fsSL https://getmoshi.app/install.sh | sh' later"
@@ -469,19 +430,16 @@ fi
 ##### 7. user tree: mise #####
 #
 # Rule 1, user half: tools that self-update in place are owned by the user
-# who updates them. mise is the single mechanism for node, python and bun,
-# and mise-managed npm globals carry opencode, pi and codex.
+# who updates them. mise provides node, python and bun; npm globals on top
+# of it carry opencode, pi and codex.
 #
-# Toolchains install under ~/.local/share/mise, on the VM DISK. Only
-# ~/.config/mise (the manifest) persists on /data. Toolchains are large, hot,
-# and reproducible from the manifest, so keeping them local avoids executing
-# node off virtiofs on every invocation and keeps /data small.
+# Toolchains install under ~/.local/share/mise on the VM disk; only the
+# manifest at ~/.config/mise persists on /data. They are reproducible from
+# it, and keeping them local avoids running node off virtiofs.
 
 MISE_TOOLS="${MISE_TOOLS:-node@lts python@3.13 bun@latest}"
 
 log "mise"
-# Multi-line as the dev user goes through STDIN. 'sudo -i' with multi-line
-# arguments joins them on spaces and re-parses, destroying the quoting.
 as_user <<'EOF'
 set -euo pipefail
 export PATH="$HOME/.local/bin:$PATH"
@@ -506,11 +464,9 @@ eval "$(mise activate bash)"
 
 npm i -g --no-fund --no-audit typescript tsx prettier eslint vitest || echo "WARNING: npm globals partially failed" >&2
 
-# The 'opencode' meta-package misresolves its platform deps and demands a
-# musl build on glibc (EBADPLATFORM), reproducibly, even with --force.
-# Install the platform-scoped package directly. Platform-scoped npm packages
-# do not create bin links, so link it by hand INSIDE the user tree. This is
-# not a cross-tree hop: both ends are owned by the same user.
+# The 'opencode' meta-package demands a musl build on glibc (EBADPLATFORM),
+# so install the platform-scoped package directly. Those create no bin link,
+# so link it by hand within the user tree. Both ends are the same user.
 npm i -g --no-fund --no-audit opencode-linux-x64 || echo "WARNING: opencode failed" >&2
 prefix="$(npm prefix -g)"
 if [[ -f "$prefix/lib/node_modules/opencode-linux-x64/bin/opencode" ]]; then
@@ -519,32 +475,27 @@ fi
 
 npm i -g --no-fund --no-audit @openai/codex || echo "WARNING: codex failed" >&2
 
-# pi's own docs specify --ignore-scripts: it needs no lifecycle scripts for a
-# normal install, and bun/npm block them by default anyway.
+# --ignore-scripts per pi's own docs; it needs no lifecycle scripts.
 npm i -g --no-fund --no-audit --ignore-scripts @earendil-works/pi-coding-agent \
   || echo "WARNING: pi failed" >&2
 
 # pnpm as the documented fallback package manager. bun comes from mise.
 npm i -g --no-fund --no-audit pnpm@latest || echo "WARNING: pnpm failed" >&2
 
-# uv owns python packages. Debian 13 marks the system python
-# externally-managed, so 'pip3 --user --break-system-packages' is retired.
+# uv owns python packages; Debian 13's system python is externally-managed.
 mise exec python -- python -m pip install --quiet --upgrade uv || echo "WARNING: uv failed" >&2
 
-# mise generates shims when IT installs a tool. Anything added afterwards
-# (npm globals, and uv via pip into mise's python) has no shim until we
-# ask for one, and shims are the only thing a non-interactive login shell
-# sees. Without this, a tool is installed and still "not found".
+# mise only shims what it installed itself, and shims are all a
+# non-interactive login shell sees. Without this the npm globals and uv
+# above are installed and still "not found".
 mise reshim || echo "WARNING: mise reshim failed" >&2
 EOF
 
 ##### 8. shell configuration #####
 #
-# Rule 2: Debian sources /etc/profile.d for DASH login shells too. A
-# bash-only construct there makes every 'sh -lc' probe emit errors and exit
-# 2, which silently broke Moshi's moshi-hook detection and cost hours to
-# find. This script validates its own output and aborts rather than shipping
-# a file that only bash can read.
+# Rule 2: Debian sources /etc/profile.d for dash login shells too, so a
+# bash-only construct there makes every 'sh -lc' probe exit 2. Everything
+# written here is POSIX, and the dash -n loop below aborts if it is not.
 
 log "profile.d"
 
@@ -558,8 +509,7 @@ esac
 export PATH
 EOF
 
-# zoxide's init output is shell-specific and evaluating it unconditionally
-# broke dash login shells. Guard on the running shell.
+# zoxide's init output is shell-specific; guard on the running shell.
 cat >/etc/profile.d/20-devbox-zoxide.sh <<'EOF'
 # POSIX sh. Must parse under dash; validated by devbox-bootstrap.
 if [ -n "${BASH_VERSION:-}" ] && command -v zoxide >/dev/null 2>&1; then
@@ -567,16 +517,12 @@ if [ -n "${BASH_VERSION:-}" ] && command -v zoxide >/dev/null 2>&1; then
 fi
 EOF
 
-# mise shims, not "mise activate": activate is an interactive-shell
-# mechanism, while scripts, scp and remote-exec run non-interactively and
-# would otherwise see a short PATH with none of the user-tree tools on it.
-# Incident: agents, bash -lc, and sh -lc all invoke tools non-interactively
-# and every one of them needs this, not just zsh.
+# Covers every login shell, dash and bash included, not just zsh: agents,
+# scripts and remote-exec all invoke tools this way.
 cat >/etc/profile.d/15-devbox-mise-shims.sh <<'EOF'
 # POSIX sh. Must parse under dash; validated by devbox-bootstrap.
 # mise shims, not "mise activate": activate is an interactive-shell
-# mechanism, while scripts, scp and remote-exec run non-interactively and
-# would otherwise see a short PATH with none of the user-tree tools on it.
+# mechanism, and scripts, scp and remote-exec run non-interactively.
 if [ -d "$HOME/.local/share/mise/shims" ]; then
   case ":${PATH}:" in
     *:"$HOME/.local/share/mise/shims":*) ;;
@@ -592,30 +538,23 @@ done
 
 ##### 9. ~/.zshrc #####
 #
-# Rule 3: the file is MANAGED and lives on /data. No sed-merging, no
-# stripping of herdr's 'promptinit; prompt adam1' lines. herdr's precmd
-# re-asserted its own prompt on every render and stomped starship regardless
-# of load order, while one-shot 'zsh -ic' probes looked fine.
-#
-# Because ~/.zshrc persists on /data, herdr's first-run file creation happens
-# exactly once, on the first boot of the first box, and never again. herdr is
-# installed BEFORE this runs so the ordering within that single first run is
-# deterministic.
+# Rule 3: the file is managed and lives on /data. Own it outright; no
+# sed-merging with what another tool wrote. Because it persists on /data,
+# herdr's first-run write happens once ever, and herdr is installed before
+# this runs so that single first run is deterministic.
 
-ZSHRC_VERSION="2"
+ZSHRC_VERSION="3"
 link_state_file zshrc .zshrc
 
 if ! grep -q "^# devbox-managed zshrc v${ZSHRC_VERSION}\$" "${DATA}/state/zshrc" 2>/dev/null; then
   log "writing managed .zshrc (v${ZSHRC_VERSION})"
   cat >"${DATA}/state/zshrc" <<'ZRC'
-# devbox-managed zshrc v2
+# devbox-managed zshrc v3
 # Regenerated by devbox-bootstrap when the version marker changes.
 # Local additions go in ~/.zshrc.local, which is sourced at the end.
 #
-# No 'export PATH="$HOME/.local/bin:$PATH"' here: ~/.zshenv already adds it,
-# guarded, and runs before ~/.zshrc on every zsh invocation without
-# exception. Adding it again here duplicated the entry on every interactive
-# shell start. One owner per PATH entry.
+# ~/.zshenv owns PATH and runs first on every zsh invocation. Do not prepend
+# to PATH here: one owner per entry, or it duplicates on every shell start.
 
 export EDITOR=vim
 
@@ -633,9 +572,9 @@ source /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh 2>/dev/nul
 command -v mise    >/dev/null && eval "$(mise activate zsh)"
 command -v zoxide  >/dev/null && eval "$(zoxide init zsh)"
 
-# starship is the SOLE prompt owner. Do not enable the zsh prompt subsystem
-# or select herdr's own adam1 theme here: its precmd re-asserts itself on
-# every render and stomps starship regardless of load order.
+# starship is the sole prompt owner. No promptinit and no 'prompt <name>'
+# here: a theme's precmd re-asserts itself on every render and stomps
+# starship regardless of load order.
 command -v starship >/dev/null && eval "$(starship init zsh)"
 
 alias ll='ls -lah'
@@ -648,32 +587,24 @@ ZRC
   chown 1000:1000 "${DATA}/state/zshrc"
 fi
 
-# Issue #2 in the incident ledger: non-interactive shells have a short
-# PATH. Scripts, scp and remote commands never source ~/.zshrc, so
-# user-local bins are invisible to them. /etc/profile.d/15-devbox-mise-shims
-# above covers every LOGIN shell (dash, bash, zsh). It cannot cover plain
-# 'ssh host cmd', which is non-interactive AND non-login: no profile.d file
-# runs for it. zsh sources ~/.zshenv for that case, and only zsh, so this
-# is the zsh-specific top-up, not a duplicate of the profile.d file.
-ZSHENV_VERSION="1"
+# The profile.d files above cover every login shell, but not plain
+# 'ssh host cmd', which is neither login nor interactive. zsh sources
+# ~/.zshenv for that case, so this is the zsh-specific top-up rather than a
+# duplicate of the profile.d file.
+ZSHENV_VERSION="2"
 link_state_file zshenv .zshenv
 
 if ! grep -q "^# devbox-managed zshenv v${ZSHENV_VERSION}\$" "${DATA}/state/zshenv" 2>/dev/null; then
   log "writing managed .zshenv (v${ZSHENV_VERSION})"
   cat >"${DATA}/state/zshenv" <<'ZENV'
-# devbox-managed zshenv v1
+# devbox-managed zshenv v2
 # Regenerated by devbox-bootstrap when the version marker changes.
 #
-# zsh sources ~/.zshenv for EVERY invocation, including plain
-# 'ssh host cmd' (non-interactive, non-login), which is the one shell
-# entry point /etc/profile.d cannot reach. mise shims, not 'mise activate':
-# activate is interactive-only, this path must work with no shell running.
-#
-# zsh never sources /etc/profile.d on Debian; that is a bash/dash-only
-# mechanism wired through /etc/profile, and zsh's own /etc/zsh/zprofile does
-# not call it. So both prepends /etc/profile.d applies for other shells have
-# to be repeated here for zsh: ~/.local/bin (where the mise binary itself
-# lives) and the shims dir (where mise-managed tools live).
+# zsh sources this on every invocation, including plain 'ssh host cmd', the
+# one entry point /etc/profile.d cannot reach. Debian's /etc/zsh/zprofile
+# never sources /etc/profile, so both prepends that file makes for other
+# shells are repeated here: ~/.local/bin, holding the mise binary, and the
+# shims directory, holding what mise manages.
 case ":${PATH}:" in
   *:"$HOME/.local/bin":*) ;;
   *) PATH="$HOME/.local/bin:$PATH" ;;
@@ -692,23 +623,20 @@ chown -R 1000:1000 "${DEV_HOME}/.cache"
 
 ##### 10. systemd user units #####
 #
-# Linger keeps these running when no session is attached, which is what makes
-# the box reachable from Moshi's session picker without an SSH login first.
+# Linger keeps these running with no session attached, so the box is
+# reachable from Moshi's session picker without an SSH login first.
 
 log "systemd user units"
 loginctl enable-linger "$DEV_USER"
 
-# 'sudo -iu' does not run a real PAM login session, so it never inherits
-# XDG_RUNTIME_DIR or DBUS_SESSION_BUS_ADDRESS from logind; systemctl --user
-# below would otherwise fail with "Failed to connect to user scope bus".
-# Linger already keeps this user manager running, so just make sure it is
-# up before talking to it instead of waiting on a session that never comes.
+# 'sudo -iu' establishes no PAM login session, so systemctl --user below has
+# no bus until the user manager is up. Start it rather than waiting on a
+# login session that never comes; linger keeps it running afterward.
 systemctl start "user@$(id -u "$DEV_USER").service"
 
 install -d -o 1000 -g 1000 -m 0755 "${DEV_HOME}/.config/systemd/user"
 
-# The subcommand is 'serve'. ExecStart points at /usr/local/bin because
-# moshi-hook is a root-tree tool now, not the old %h/.local/bin path.
+# moshi-hook is a root-tree tool, so /usr/local/bin, not %h/.local/bin.
 cat >"${DEV_HOME}/.config/systemd/user/moshi-hook.service" <<'EOF'
 [Unit]
 Description=Moshi hook daemon (agent hooks + Moshi bridge)
@@ -723,14 +651,12 @@ RestartSec=5
 WantedBy=default.target
 EOF
 
-# Pre-starts the default herdr session so Moshi's picker shows a workspace on
-# first connect; it lists only RUNNING sessions, so a fresh box would
-# otherwise show nothing until someone ran 'herdr' by hand.
+# Pre-starts the default herdr session. Moshi's picker lists only running
+# sessions, so a fresh box would show nothing until someone ran 'herdr'.
 #
-# script(1) is not decoration: herdr's TUI needs a tty even when the client
-# just daemonizes the session. Type=simple because the script/herdr-client
-# process stays attached to the session (unlike tmux's detach-and-exit), so
-# forking detection would time out. The unit IS the session holder.
+# script(1) gives the TUI a tty, which it needs even when the client
+# daemonizes. Type=simple because the process stays attached to the session,
+# so forking detection would time out: the unit is the session holder.
 #
 # Do NOT use 'herdr server stop' to walk away; that kills every pane.
 cat >"${DEV_HOME}/.config/systemd/user/herdr-session.service" <<'EOF'
@@ -751,14 +677,10 @@ EOF
 
 chown -R 1000:1000 "${DEV_HOME}/.config/systemd"
 
-# Moshi's picker shows the herdr workspace label as "~", not a project name.
-# herdr derives the label from the session's working directory, and this
-# unit has none set, so it defaults to $HOME. A prior attempt at
-# WorkingDirectory=%h/projects on herdr-session.service moved the process
-# cwd but did NOT change the picker label; do not re-try that fix here. The
-# mkdir below is not load-bearing for the label. A real fix would go through
-# 'herdr workspace rename <id> <label>' after the session starts (see
-# 'herdr workspace rename --help'); left as a follow-up, not implemented.
+# Known and unfixed: Moshi's picker labels the herdr workspace "~".
+# WorkingDirectory= on the unit was tried and moves the cwd without changing
+# the label, so do not re-try it. The fix would be 'herdr workspace rename'
+# after the session starts. The mkdir below is unrelated to the label.
 as_user <<'EOF'
 set -euo pipefail
 export XDG_RUNTIME_DIR="/run/user/$(id -u)"
@@ -770,9 +692,8 @@ systemctl --user enable --now herdr-session.service || echo "WARNING: herdr-sess
 EOF
 
 # Pre-install the Claude agent hooks so blocked agents can push to the phone
-# as soon as pairing happens. claude must already be installed (task 9).
-# Same bus env as above: without it, moshi-hook can't see its own already-
-# running daemon and prints a misleading "daemon isn't running" warning.
+# as soon as pairing happens. Same bus env as above, or moshi-hook cannot
+# see its own running daemon and warns that it is not running.
 optional "moshi-hook claude hooks" \
   sudo -iu "$DEV_USER" env \
     "XDG_RUNTIME_DIR=/run/user/$(id -u "$DEV_USER")" \

@@ -5,10 +5,8 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 fail=0
-# --others --exclude-standard also lists NEW files that are not yet
-# staged. Without them the gate silently skips the file you are
-# currently writing and reports clean, which is how a lint failure
-# shipped in a commit that claimed lint passed.
+# --others --exclude-standard so new, unstaged files are linted too.
+# Without them the gate skips the file you are currently writing.
 mapfile -t files < <(git ls-files --cached --others --exclude-standard '*.sh')
 
 for f in "${files[@]}"; do
@@ -19,7 +17,7 @@ for f in "${files[@]}"; do
 done
 
 if command -v shellcheck >/dev/null 2>&1; then
-  # config.sh files are sourced, not executed; tell shellcheck so.
+  # -S warning: style suggestions are not gate failures.
   shellcheck -S warning "${files[@]}" || fail=1
 elif [[ "${LINT_ALLOW_NO_SHELLCHECK:-0}" == "1" ]]; then
   echo "WARNING: shellcheck not installed, skipping (LINT_ALLOW_NO_SHELLCHECK=1)" >&2
@@ -28,9 +26,9 @@ else
   fail=1
 fi
 
-# Every file destined for /etc/profile.d must parse under dash, because
-# Debian sources profile.d for dash login shells too. A bash-only construct
-# there makes 'sh -lc' exit 2 and silently breaks Moshi's hook detection.
+# Files destined for /etc/profile.d must parse under dash: Debian sources
+# profile.d for dash login shells too, and a bash-only construct there makes
+# every 'sh -lc' probe exit 2.
 if [[ -d profile.d ]]; then
   for f in profile.d/*.sh; do
     [[ -e "$f" ]] || continue
