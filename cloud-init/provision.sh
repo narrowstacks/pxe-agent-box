@@ -236,6 +236,19 @@ systemctl --user daemon-reload
 systemctl --user enable --now herdr-session.service
 HERDRUNIT
 
+# Give the default workspace a meaningful name + a projects home, so Moshi's
+# session picker shows "projects" instead of a bare "~" home-dir workspace.
+sudo -iu "$ADMIN_USER" bash -s <<'HERDRWS'
+mkdir -p "$HOME/projects"
+for i in $(seq 1 30); do
+  WS=$(herdr workspace list --json 2>/dev/null |
+    python3 -c 'import json,sys;ws=json.load(sys.stdin)["result"]["workspaces"];print(ws[0]["workspace_id"] if ws else "")' 2>/dev/null) || true
+  [[ -n "$WS" ]] && break
+  sleep 2
+done
+[[ -n "${WS:-}" ]] && herdr workspace rename "$WS" projects >/dev/null 2>&1 || true
+HERDRWS
+
 # Seed the herdr config in one write: --default-config plus the theme keys
 # set (appending a second [theme] table makes the TOML invalid — duplicate
 # key — so patch the uncommented defaults instead of adding a block).
