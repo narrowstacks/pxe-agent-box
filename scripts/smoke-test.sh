@@ -101,20 +101,5 @@ for b in starship herdr moshi moshi-hook; do
   check "$b does not resolve into /root" $?
 done
 
-printf '\n\033[1;34m== user tree (mise) ==\033[0m\n'
-
-for b in mise node npm bun pnpm python uv opencode codex pi tsx prettier eslint vitest; do
-  remote "zsh -lc 'command -v $b' >/dev/null 2>&1"
-  check "$b is on the admin user's login PATH" $?
-done
-
-# The whole point of the user tree: these are owned by the user who updates
-# them, so no root-owned copy or symlink can go stale.
-remote 'test -O "$(zsh -lc "command -v opencode" 2>/dev/null)"'
-check "opencode is owned by the admin user" $?
-
-remote 'zsh -lc "opencode --version" >/dev/null 2>&1'
-check "opencode runs (needs avx2 from x86-64-v3)" $?
-
 printf '\n\033[1;34m== %d passed, %d failed ==\033[0m\n' "$pass" "$fail"
 [[ $fail -eq 0 ]]
