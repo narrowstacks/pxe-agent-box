@@ -266,6 +266,15 @@ mkdir -p /var/lib/agent-box
     npm_outdated=$(npm outdated -g --parseable 2>/dev/null | grep -c . || true)
   printf 'npm_outdated=%s\n' "$npm_outdated"
 
+  # bun keeps its own global tree (~/.bun/install/global); the node_modules
+  # layout is npm-compatible, so npm can count outdated packages there.
+  bun_outdated=0
+  if command -v bun >/dev/null && [[ -f "${HOME}/.bun/install/global/package.json" ]]; then
+    bun_outdated=$(npm outdated -g --parseable \
+      --prefix "${HOME}/.bun/install/global" 2>/dev/null | grep -c . || true)
+  fi
+  printf 'bun_outdated=%s\n' "$bun_outdated"
+
   # distro-python packages (PEP 668 env); output = 2 header rows then results
   pip_outdated=0
   command -v pip3 >/dev/null && \
@@ -395,6 +404,10 @@ if [[ -r /var/lib/agent-box/apt-status ]]; then
     if ((pip_outdated > 0)); then
       printf " ${dim}%s python package%s outdated${off} — pip3 list --outdated; pip3 install -U <name>\n" \
         "$pip_outdated" "$( ((pip_outdated == 1)) || echo s )"
+    fi
+    if ((bun_outdated > 0)); then
+      printf " ${dim}%s bun package%s outdated${off} — bun pm ls -g; bun update -g\n" \
+        "$bun_outdated" "$( ((bun_outdated == 1)) || echo s )"
     fi
     if [[ -n "$bun_cur" && -n "$bun_new" && "$bun_cur" != "$bun_new" ]]; then
       printf " ${dim}bun %s available (%s installed)${off} — bun upgrade\n" "$bun_new" "$bun_cur"
