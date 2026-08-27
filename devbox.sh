@@ -333,8 +333,12 @@ assert_work_tree_clean() {
   local dirty
   dirty="$(ssh -o BatchMode=yes "${ADMIN_USER}@${ip}" 'bash -s' <<'EOF'
 set -uo pipefail
-shopt -s nullglob
-for d in "$HOME"/work/*/; do
+shopt -s nullglob dotglob
+if [[ ! -d "$HOME/work" ]]; then
+  echo "work directory missing: cannot verify, refusing to guess"
+  exit 0
+fi
+for d in "$HOME"/work/*; do
   name="$(basename "$d")"
   if [[ -d "$d/.git" ]]; then
     if [[ -n "$(git -C "$d" status --porcelain 2>/dev/null)" ]]; then
@@ -346,15 +350,18 @@ for d in "$HOME"/work/*/; do
     elif [[ -n "$(git -C "$d" log '@{u}..' --oneline 2>/dev/null)" ]]; then
       echo "unpushed commits: $name"
     fi
-  elif [[ -n "$(ls -A "$d" 2>/dev/null)" ]]; then
-    echo "non-git directory with contents: $name"
+  elif [[ -d "$d" ]]; then
+    if [[ -n "$(ls -A "$d" 2>/dev/null)" ]]; then
+      echo "non-git directory with contents: $name"
+    fi
+  else
+    echo "loose file: $name"
   fi
 done
 EOF
 )"
 
-  # shellcheck disable=SC2088  # literal log text, not an unexpanded path
-  [[ -z "$dirty" ]] && { log "~/work is clean"; return 0; }
+  [[ -z "$dirty" ]] && { log "work tree is clean"; return 0; }
 
   printf '\n\033[1;31mrefusing to rebuild:\033[0m ~/work has unsaved state\n' >&2
   printf '%s\n' "$dirty" >&2
@@ -366,6 +373,7 @@ snapshot_work() {
   local ip="$1"
   local stamp
   stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  run mkdir -p "${DATA_HOST_DIR}/work-snapshots"
   log "snapshotting ~/work to ${DATA_HOST_DIR}/work-snapshots/${stamp}.tar.zst"
 
   # Belt and braces behind the gate, not the primary mechanism. Excludes the
