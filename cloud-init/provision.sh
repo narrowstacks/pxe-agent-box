@@ -58,11 +58,14 @@ curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" -o /tmp/nodesource
 bash /tmp/nodesource-setup.sh >/dev/null
 apt-get install -y nodejs
 
-log "installing global npm tooling: pnpm + coding agents (opencode, pi, codex)"
-npm install -g \
-  pnpm@latest \
-  opencode-ai \
-  @openai/codex
+npm install -g pnpm@latest
+npm install -g @openai/codex
+# opencode's platform-specific optional deps can mismatch glibc/musl and fail
+# the whole install (EBADPLATFORM). Retry once, then continue — it is re-checked
+# in the verification section below rather than aborting provisioning.
+npm install -g opencode-ai ||
+  npm install -g --force opencode-ai ||
+  log "WARNING: opencode install failed — retry later: npm i -g opencode-ai"
 # pi explicitly documents --ignore-scripts: no lifecycle scripts needed for normal installs
 npm install -g --ignore-scripts @earendil-works/pi-coding-agent
 
