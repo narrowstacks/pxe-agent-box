@@ -85,18 +85,26 @@ ln -sf /root/.local/bin/uvx /usr/local/bin/uvx
 # them and abort.
 pip3 install --break-system-packages --ignore-installed --no-input ${PIP_PACKAGES}
 
-log "installing Claude Code from Anthropic's apt repo (approved headless install)"
-# Native installer busy-loops post-download on some headless guests; per
-# Anthropic guidance use the signed apt repo instead. Tolerate failure: the
-# verification step and banner checklist surface claude if it's missing.
+log "installing Claude Code from Anthropic's apt repo, stable channel (per code.claude.com/docs/en/setup)"
+# Native installer busy-loops post-download on some headless guests, so use
+# the documented apt path. Verify the signing key's published fingerprint
+# BEFORE registering the repo; skip cleanly rather than trust an unverified key.
 mkdir -p /etc/apt/keyrings
-curl -fsSL https://downloads.claude.ai/keys/claude-code.asc \
-  -o /etc/apt/keyrings/claude-code.asc &&
-  echo "deb [signed-by=/etc/apt/keyrings/claude-code.asc] https://downloads.claude.ai/claude-code/apt/stable stable main" \
-  >/etc/apt/sources.list.d/claude-code.list &&
-  apt-get update -qq &&
-  DEBIAN_FRONTEND=noninteractive apt-get install -y claude-code ||
-  log "WARNING: claude-code apt install failed — see https://docs.claude.ai for manual steps"
+if curl -fsSL https://downloads.claude.ai/keys/claude-code.asc \
+     -o /etc/apt/keyrings/claude-code.asc &&
+   gpg --show-keys /etc/apt/keyrings/claude-code.asc 2>/dev/null | tr -d ' ' |
+   grep -q 31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE; then
+  # stable channel (~1 wk behind latest, skips regressed releases); upgrade via
+  # 'apt upgrade claude-code' — our banner's apt-update counter sees these.
+  echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/claude-code.asc] https://downloads.claude.ai/claude-code/apt/stable stable main" \
+    >/etc/apt/sources.list.d/claude-code.list &&
+    apt-get update -qq &&
+    DEBIAN_FRONTEND=noninteractive apt-get install -y claude-code ||
+    log "WARNING: claude-code apt install failed — see https://code.claude.com/docs/en/setup"
+else
+  rm -f /etc/apt/keyrings/claude-code.asc
+  log "WARNING: claude-code signing key missing or fingerprint mismatch — repo not registered"
+fi
 
 log "installing Google Chrome stable (full GUI + headless in one binary)"
 CHROME_DEB="$(mktemp /tmp/chrome-XXXXXX.deb)"

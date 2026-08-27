@@ -122,7 +122,7 @@ users:
     sudo: ALL=(ALL) NOPASSWD:ALL
     lock_passwd: true
     # Keys must be embedded HERE. This custom user-data replaces everything
-    # PVE would generate, so VM-level `qm set --sshkeys` is never consumed
+    # PVE would generate, so VM-level $(qm set --sshkeys) is never consumed
     # when cicustom user= is set.
     ssh_authorized_keys:
 $(for k in "${PUBKEYS[@]}"; do printf '      - %s\n' "$k"; done)
