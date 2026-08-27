@@ -71,22 +71,18 @@ qm status "$VM_ID" >/dev/null 2>&1 && fail "VM ID ${VM_ID} is already in use"
 
 ##### collect ssh public keys #####
 
-declare -a KEY_ARGS=()
-SSH_KEYS_FILE="$(mktemp)"
-: >"$SSH_KEYS_FILE"
+declare -a PUBKEYS=()
 for f in $SSH_KEY_FILES; do
   [[ -s "$f" ]] || continue
   if ! head -c512 "$f" | grep -qE '^(ssh-(rsa|ed25519)|ecdsa-sha2-[a-z0-9-]+) '; then
     fail "$f does not look like an OpenSSH public key"
   fi
   log "using key file: $f ($(wc -l <"$f") key(s))"
-  KEY_ARGS+=("$f")
-  cat "$f" >>"$SSH_KEYS_FILE"
+  while IFS= read -r key; do
+    [[ -n "$key" ]] && PUBKEYS+=("$key")
+  done <"$f"
 done
-((${#KEY_ARGS[@]})) || {
-  rm -f "$SSH_KEYS_FILE"
-  fail "no SSH key files found (checked: ${SSH_KEY_FILES}). Set SSH_KEY_FILES in config.sh."
-}
+((${#PUBKEYS[@]})) || fail "no SSH keys found (checked: ${SSH_KEY_FILES}). Set SSH_KEY_FILES in config.sh."
 
 ##### build guest env + provision payload #####
 
@@ -125,6 +121,11 @@ users:
     shell: /bin/bash
     sudo: ALL=(ALL) NOPASSWD:ALL
     lock_passwd: true
+    # Keys must be embedded HERE. This custom user-data replaces everything
+    # PVE would generate, so VM-level `qm set --sshkeys` is never consumed
+    # when cicustom user= is set.
+    ssh_authorized_keys:
+$(for k in "${PUBKEYS[@]}"; do printf '      - %s\n' "$k"; done)
 
 write_files:
   - path: /etc/agent-box.env
@@ -155,11 +156,6 @@ qm set "$VM_ID" --cores "$VM_CORES" --memory "$VM_MEMORY_MB" --balloon 2048
 # PVE 8.4: legacy 'qm resize' alias mangles args; use the full 'qm disk resize'
 # command with size as a positional argument.
 qm disk resize "$VM_ID" scsi0 "${DISK_GB}G"
-# Bake the SSH keys into VM-level cloud-init. `qm set --sshkeys` wants ONE
-# file containing every key — we concatenated them above. This must be set
-# BEFORE first boot: cloud-init consumes it once and writes authorized_keys.
-qm set "$VM_ID" --sshkeys "$SSH_KEYS_FILE"
-rm -f "$SSH_KEYS_FILE"
 qm set "$VM_ID" --cicustom "user=${SNIPPET_STORAGE}:snippets/${SNIPPET_NAME}"
 
 # Guest networking via PVE's native mechanism (cloud-init consumes this into

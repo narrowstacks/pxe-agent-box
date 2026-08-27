@@ -80,7 +80,10 @@ curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null
 ln -sf /root/.local/bin/uv /usr/local/bin/uv
 ln -sf /root/.local/bin/uvx /usr/local/bin/uvx
 # shellcheck disable=SC2086  # word splitting intended
-pip3 install --break-system-packages --no-input ${PIP_PACKAGES}
+# --ignore-installed: some distro-python packages (e.g. typing_extensions) ship
+# without RECORD metadata; plain --break-system-packages would try to uninstall
+# them and abort.
+pip3 install --break-system-packages --ignore-installed --no-input ${PIP_PACKAGES}
 
 log "installing Claude Code via the official installer (as ${ADMIN_USER}; lands in ~/.local/bin)"
 sudo -iu "$ADMIN_USER" bash -c \
