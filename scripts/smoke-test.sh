@@ -2,8 +2,9 @@
 #
 # Run from the Mac against a booted box:  ./scripts/smoke-test.sh <host>
 #
-# Every assertion here corresponds to a real incident recorded in
-# HANDOFF-SIMPLIFICATION.md. Adding one is cheaper than rediscovering the bug.
+# Each assertion guards a specific failure mode described in docs/pitfalls.md.
+# Adding one is cheap; keeping a useless one is not. Before trusting a new
+# assertion, break what it checks and confirm it reports FAIL.
 #
 set -uo pipefail   # NOT -e: a failing assertion must not abort the suite
 
