@@ -171,9 +171,61 @@ cmd_template() {
   log "template $TEMPLATE_ID ready"
 }
 
+##### render #####
+
+render_snippet() {
+  local tpl="cloud-init/devbox.yaml.tpl"
+  [[ -f "$tpl" ]] || fail "missing $tpl"
+
+  # Build the YAML key list with correct indentation. Keys are read from
+  # files on the PVE host, so SSH_KEY_FILES must hold absolute paths.
+  local keys="" k line
+  for k in $SSH_KEY_FILES; do
+    [[ -s "$k" ]] || fail "SSH key file missing or empty: $k"
+    while IFS= read -r line; do
+      [[ -n "$line" ]] || continue
+      keys+="      - ${line}"$'\n'
+    done < "$k"
+  done
+  [[ -n "$keys" ]] || fail "no SSH keys resolved from SSH_KEY_FILES"
+  keys="${keys%$'\n'}"
+  # -v assignment values are lexed like an awk string literal (POSIX), so a
+  # raw newline byte in the value is a parse error ("newline in string") on
+  # awk implementations that enforce this strictly. Pass the escape sequence
+  # instead; awk's own lexer turns \n back into a real newline when it reads
+  # the -v value, so this needs no unescaping inside the program below.
+  keys="${keys//$'\n'/\\n}"
+
+  # Substitute with awk rather than sed so key material containing slashes
+  # or ampersands cannot corrupt the output.
+  awk -v vmname="$VMNAME" \
+      -v adminuser="$ADMIN_USER" \
+      -v tz="$GUEST_TIMEZONE" \
+      -v mapid="$DATA_MAP_ID" \
+      -v bootstrap="$BOOTSTRAP_URL" \
+      -v misetools="${MISE_TOOLS:-}" \
+      -v swapgb="${SWAP_SIZE_GB:-8}" \
+      -v enableufw="${ENABLE_UFW:-1}" \
+      -v extraapt="${EXTRA_APT_PACKAGES:-}" \
+      -v keys="$keys" '
+    { line = $0
+      gsub(/@VMNAME@/,             vmname,     line)
+      gsub(/@ADMIN_USER@/,         adminuser,  line)
+      gsub(/@GUEST_TIMEZONE@/,     tz,         line)
+      gsub(/@DATA_MAP_ID@/,        mapid,      line)
+      gsub(/@BOOTSTRAP_URL@/,      bootstrap,  line)
+      gsub(/@MISE_TOOLS@/,         misetools,  line)
+      gsub(/@SWAP_SIZE_GB@/,       swapgb,     line)
+      gsub(/@ENABLE_UFW@/,         enableufw,  line)
+      gsub(/@EXTRA_APT_PACKAGES@/, extraapt,   line)
+      if (line == "@SSH_KEYS@") { print keys } else { print line }
+    }' "$tpl"
+}
+
 case "${1:-}" in
   preflight) ./scripts/preflight.sh ;;
   salvage)   shift; cmd_salvage "$@" ;;
   template)  shift; cmd_template "$@" ;;
+  render)    render_snippet ;;
   *) echo "usage: $0 {preflight|salvage|template|render|create|rebuild}" >&2; exit 1 ;;
 esac
