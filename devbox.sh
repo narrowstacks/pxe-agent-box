@@ -33,7 +33,7 @@ fail() { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 # Shared by create and rebuild. Skips loopback, tailscale and docker
 # interfaces so the LAN address is what comes back.
 guest_ip() {
-  qm guest cmd "$1" network-get-interfaces 2>/dev/null \
+  qm guest cmd "$1" network-get-interfaces </dev/null 2>/dev/null \
     | python3 -c 'import json,sys
 try: d=json.load(sys.stdin)
 except Exception: raise SystemExit
@@ -376,7 +376,7 @@ EOF
   # which would make the gate report failures that are not real.
   local raw rc
   raw="$(qm guest exec "$VMID" --timeout 60 -- /bin/sh -c \
-    "su -s /bin/bash - '${ADMIN_USER}' -c 'bash /data/.devbox-workcheck.sh'" 2>/dev/null)" && rc=0 || rc=$?
+    "su -s /bin/bash - '${ADMIN_USER}' -c 'bash /data/.devbox-workcheck.sh'" </dev/null 2>/dev/null)" && rc=0 || rc=$?
   rm -f "$check_script"
 
   [[ $rc -eq 0 ]] || fail "cannot reach the guest agent to check ~/work; pass --force to rebuild anyway"
@@ -422,7 +422,7 @@ EOF
   # Runs as root (guest exec's default): tar/zstd do not care about
   # ownership the way git does, so no su is needed here.
   local raw rc
-  raw="$(qm guest exec "$VMID" --timeout 120 -- /bin/sh -c "bash /data/.devbox-snapshot.sh" 2>/dev/null)" && rc=0 || rc=$?
+  raw="$(qm guest exec "$VMID" --timeout 120 -- /bin/sh -c "bash /data/.devbox-snapshot.sh" </dev/null 2>/dev/null)" && rc=0 || rc=$?
   rm -f "$snap_script"
 
   if [[ $rc -eq 0 ]] && printf '%s' "$raw" | python3 -c 'import json, sys
@@ -444,7 +444,7 @@ sys.exit(0 if d.get("exited") == 1 and d.get("exitcode", 1) == 0 else 1)' 2>/dev
 cmd_rebuild() {
   local force="${1:-}"
 
-  qm status "$VMID" >/dev/null 2>&1 || fail "VMID $VMID does not exist; use 'create'"
+  qm status "$VMID" </dev/null >/dev/null 2>&1 || fail "VMID $VMID does not exist; use 'create'"
 
   # Reported for the operator's benefit only; the checks below go through
   # 'qm guest exec', not ssh, so this address is not otherwise used.
