@@ -93,8 +93,10 @@ apt-get install -y --no-install-recommends \
   ${EXTRA_APT_PACKAGES:-}
 
 # Debian ships these under alternate binary names.
-ln -sf "$(command -v fdfind)" /usr/local/bin/fd
-ln -sf "$(command -v batcat)" /usr/local/bin/bat
+fdfind_path="$(command -v fdfind)" || fail "fdfind missing after apt install; base packages did not land"
+ln -sf "$fdfind_path" /usr/local/bin/fd
+batcat_path="$(command -v batcat)" || fail "batcat missing after apt install; base packages did not land"
+ln -sf "$batcat_path" /usr/local/bin/bat
 
 ##### 2. system tuning #####
 
@@ -125,7 +127,8 @@ EOF
 # tmpfs /tmp keeps build scratch off the virtual disk entirely.
 if ! systemctl is-enabled tmp.mount >/dev/null 2>&1; then
   cp /usr/share/systemd/tmp.mount /etc/systemd/system/tmp.mount 2>/dev/null || true
-  systemctl enable tmp.mount 2>/dev/null || true
+  systemctl enable tmp.mount 2>/dev/null \
+    || warn "tmpfs /tmp not enabled; build scratch will land on the VM disk"
 fi
 
 # OOM cushion. Parallel test workers spike hard.
@@ -133,8 +136,12 @@ if [[ ! -f /swapfile ]]; then
   fallocate -l "${SWAP_SIZE_GB}G" /swapfile
   chmod 600 /swapfile
   mkswap /swapfile >/dev/null
-  swapon /swapfile
-  grep -q '^/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >>/etc/fstab
+fi
+grep -q '^/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >>/etc/fstab
+# Existence is not activation: the file can survive a rebuild without being
+# swapped on, and vice versa. Check the actual end state, not just -f.
+if ! swapon --show=NAME --noheadings 2>/dev/null | grep -qx '/swapfile'; then
+  swapon /swapfile || warn "could not enable /swapfile"
 fi
 
 ##### 3. persistent state links #####
@@ -152,9 +159,17 @@ link_state() {
   if [[ -e "$dst" && ! -L "$dst" ]]; then
     if [[ -d "$dst" ]]; then
       mkdir -p "$src"
-      cp -a "$dst/." "$src/" 2>/dev/null || true
+      # Do NOT discard cp's status. /data is virtiofs, where xattr and
+      # special-file copies can fail, and the rm below is the only copy's
+      # last moment. Aborting loudly beats deleting state silently.
+      cp -a "$dst/." "$src/" \
+        || fail "could not copy ${dst} into ${src}; refusing to delete the original"
     else
-      [[ -e "$src" ]] || cp -a "$dst" "$src"
+      # If src already exists, salvaged state on /data wins over a freshly
+      # created destination, so the copy is skipped rather than overwriting
+      # it. Otherwise copy, and abort rather than delete dst on failure.
+      [[ -e "$src" ]] || cp -a "$dst" "$src" \
+        || fail "could not copy ${dst} to ${src}; refusing to delete the original"
     fi
     rm -rf "$dst"
   fi
@@ -171,7 +186,11 @@ link_state_file() {
   local src="${DATA}/state/$1" dst="${DEV_HOME}/$2"
   mkdir -p "$(dirname "$src")" "$(dirname "$dst")"
   if [[ -f "$dst" && ! -L "$dst" ]]; then
-    [[ -e "$src" ]] || cp -a "$dst" "$src"
+    # Same precedence as link_state: skip the copy if src already has
+    # salvaged state, otherwise copy and abort rather than delete dst on
+    # failure.
+    [[ -e "$src" ]] || cp -a "$dst" "$src" \
+      || fail "could not copy ${dst} to ${src}; refusing to delete the original"
     rm -f "$dst"
   fi
   [[ -e "$src" ]] || : > "$src"
@@ -196,6 +215,7 @@ link_state_file gitconfig        .gitconfig
 # should outlive a rebuild are linked individually.
 mkdir -p "${DEV_HOME}/.ssh" "${DATA}/state/ssh"
 chmod 700 "${DEV_HOME}/.ssh"
+chown 1000:1000 "${DEV_HOME}/.ssh"
 link_state_file ssh/known_hosts   .ssh/known_hosts
 chown -R 1000:1000 "${DATA}/state/ssh"
 
