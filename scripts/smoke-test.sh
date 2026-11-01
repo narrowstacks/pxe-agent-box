@@ -233,7 +233,11 @@ if [[ "${SKIP_SLOW:-0}" != "1" ]]; then
   # Unlike the checks above, apt's summary proves nothing changed rather
   # than that nothing complained. Every later install in bootstrap.sh is
   # gated by 'command -v', so a re-run runs apt once, at the top.
-  remote 'grep -q "0 upgraded, 0 newly installed, 0 to remove and 0 not upgraded." /tmp/rerun.clean.log'
+  #
+  # The "N not upgraded" count is deliberately not asserted. bootstrap.sh runs
+  # 'apt-get install', never 'upgrade', so that count is the number of updates
+  # Debian has published since the box last upgraded, not anything the re-run did.
+  remote 'grep -qE "^0 upgraded, 0 newly installed, 0 to remove and [0-9]+ not upgraded\.$" /tmp/rerun.clean.log'
   check "the re-run installed and upgraded nothing (apt reports no changes)" $?
 
   warnings="$(remote 'grep "^WARNING:" /tmp/rerun.clean.log' 2>/dev/null || true)"
